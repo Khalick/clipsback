@@ -10,9 +10,12 @@ import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
 app.use('*', cors({
-  origin: '*',
+  origin: ['https://studentportaladmin.netlify.app', 'https://clipscollegebackend.netlify.app', '*'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  exposeHeaders: ['Content-Length', 'X-Requested-With'],
+  credentials: true,
+  maxAge: 86400, // 24 hours in seconds
 }));
 
 // Serve static files from the public directory
