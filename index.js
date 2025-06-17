@@ -1,10 +1,12 @@
 import { Hono } from 'hono';
-import { pool } from './db.js';
+import { pool, sql } from './db.js';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
+import { initializeTables } from './utils/initDb.js';
+import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
 app.use('*', cors({
@@ -12,6 +14,9 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
 }));
+
+// Serve static files from the public directory
+app.use('/*', serveStatic({ root: './public' }));
 
 // Log every request
 app.use('*', async (c, next) => {
@@ -286,6 +291,113 @@ app.post('/students/:id/register-unit', async (c) => {
   return c.json(rows[0]);
 });
 
+// Student promotion route
+app.post('/students/promote', async (c) => {
+  try {
+    const { registration_number, new_year_semester } = await c.req.json();
+    
+    // First, check if the student exists
+    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${registration_number}`;
+    if (!studentResult || studentResult.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Update the student's level of study
+    await sql`UPDATE students SET level_of_study = ${new_year_semester} WHERE registration_number = ${registration_number}`;
+    
+    return c.json({ 
+      message: `Student ${registration_number} promoted to ${new_year_semester} successfully`
+    });
+  } catch (error) {
+    console.error('Error promoting student:', error);
+    return c.json({ error: 'Failed to promote student' }, 500);
+  }
+});
+
+// Academic leave route
+app.post('/students/academic-leave', async (c) => {
+  try {
+    const { registration_number } = await c.req.json();
+    
+    // First, check if the student exists
+    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${registration_number}`;
+    if (!studentResult || studentResult.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Update the student's status
+    await sql`UPDATE students SET status = 'on_leave' WHERE registration_number = ${registration_number}`;
+    
+    return c.json({ 
+      message: `Academic leave granted for student ${registration_number}`
+    });
+  } catch (error) {
+    console.error('Error granting academic leave:', error);
+    return c.json({ error: 'Failed to grant academic leave' }, 500);
+  }
+});
+
+// Readmit student route
+app.post('/students/readmit', async (c) => {
+  try {
+    const { registration_number } = await c.req.json();
+    
+    // First, check if the student exists
+    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${registration_number}`;
+    if (!studentResult || studentResult.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Check if the student is on leave
+    if (studentResult[0].status !== 'on_leave') {
+      return c.json({ error: 'Student is not on academic leave' }, 400);
+    }
+    
+    // Update the student's status
+    await sql`UPDATE students SET status = 'active' WHERE registration_number = ${registration_number}`;
+    
+    return c.json({ 
+      message: `Student ${registration_number} readmitted successfully`
+    });
+  } catch (error) {
+    console.error('Error readmitting student:', error);
+    return c.json({ error: 'Failed to readmit student' }, 500);
+  }
+});
+
+// Register units route
+app.post('/units/register', async (c) => {
+  try {
+    const { student_reg, unit_name, unit_code } = await c.req.json();
+    
+    // First, check if the student exists
+    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${student_reg}`;
+    if (!studentResult || studentResult.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Check if the unit already exists, if not, create it
+    let unitResult = await sql`SELECT * FROM units WHERE code = ${unit_code}`;
+    if (!unitResult || unitResult.length === 0) {
+      unitResult = await sql`INSERT INTO units (name, code) VALUES (${unit_name}, ${unit_code}) RETURNING *`;
+    }
+    
+    // Register the unit for the student
+    await sql`
+      INSERT INTO registered_units (student_id, unit_id) 
+      VALUES (${studentResult[0].id}, ${unitResult[0].id})
+      ON CONFLICT (student_id, unit_id) DO NOTHING
+    `;
+    
+    return c.json({ 
+      message: `Unit ${unit_code} registered successfully for student ${student_reg}`
+    });
+  } catch (error) {
+    console.error('Error registering unit:', error);
+    return c.json({ error: 'Failed to register unit' }, 500);
+  }
+});
+
 // Admin login using Supabase admins table and JWT
 app.options('/auth/admin-login', (c) => {
   return c.text('OK', 204);
@@ -294,13 +406,42 @@ app.options('/auth/admin-login', (c) => {
 app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
   const { username, password } = await c.req.json();
-  const { rows } = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
-  if (rows.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
-  const admin = rows[0];
+  const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
+  if (!admins || admins.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
+  const admin = admins[0];
   const valid = await bcrypt.compare(password, admin.password_hash);
   if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
   const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
-  return c.json({ token, username: admin.username });
+  return c.json({ token, username: admin.username, adminId: admin.id });
+});
+
+// New endpoint to match the frontend
+app.post('/admin/login', async (c) => {
+  console.log('Received POST /admin/login');
+  const { username, password } = await c.req.json();
+  const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
+  if (!admins || admins.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
+  const admin = admins[0];
+  const valid = await bcrypt.compare(password, admin.password_hash);
+  if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
+  const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
+  return c.json({ token, username: admin.username, adminId: admin.id });
+});
+
+// Verify admin token
+app.get('/admin/verify-token', async (c) => {
+  try {
+    const authHeader = c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    
+    const token = authHeader.substring(7);
+    const decoded = jwt.verify(token, process.env.SECRET_KEY);
+    return c.json({ valid: true, username: decoded.username });
+  } catch (error) {
+    return c.json({ error: 'Invalid token' }, 401);
+  }
 });
 
 app.get('/', (c) => c.text('Student Portal Backend is running!'));
@@ -405,9 +546,18 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
   return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
 });
 
-const port = process.env.PORT || 3000;
-console.log(`Server running on http://localhost:${port}`);
-serve({
-  fetch: app.fetch,
-  port: port
-});
+const port = process.env.PORT || 3001; // Changed to 3001 to avoid conflicts
+
+// Initialize database tables before starting the server
+initializeTables()
+  .then(() => {
+    console.log(`Server running on http://localhost:${port}`);
+    serve({
+      fetch: app.fetch,
+      port: port
+    });
+  })
+  .catch(err => {
+    console.error('Failed to initialize database:', err);
+    process.exit(1);
+  });
