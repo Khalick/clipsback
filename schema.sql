@@ -58,6 +58,10 @@ CREATE TABLE public.students (
   course character varying NOT NULL,
   level_of_study character varying NOT NULL,
   photo_url text,
+  national_id character varying,
+  birth_certificate character varying,
+  date_of_birth date,
+  password text,
   CONSTRAINT students_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.timetables (

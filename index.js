@@ -65,10 +65,43 @@ app.get('/students/:id', async (c) => {
 // Create a new student
 app.post('/students', async (c) => {
   const data = await c.req.json();
-  const { registration_number, name, course, level_of_study, photo_url } = data;
+  const { 
+    registration_number, 
+    name, 
+    course, 
+    level_of_study, 
+    photo_url,
+    national_id,
+    birth_certificate,
+    date_of_birth,
+    password
+  } = data;
+  
+  // Determine default password if not provided
+  let finalPassword = password;
+  if (!finalPassword) {
+    if (date_of_birth) {
+      const birthDate = new Date(date_of_birth);
+      const today = new Date();
+      const age = today.getFullYear() - birthDate.getFullYear();
+      // Check if student is 18 or older
+      if (age >= 18 && national_id) {
+        finalPassword = national_id;
+      } else if (birth_certificate) {
+        finalPassword = birth_certificate;
+      }
+    }
+  }
+  
   const { rows } = await pool.query(
-    'INSERT INTO students (registration_number, name, course, level_of_study, photo_url) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [registration_number, name, course, level_of_study, photo_url]
+    `INSERT INTO students (
+      registration_number, name, course, level_of_study, photo_url,
+      national_id, birth_certificate, date_of_birth, password
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+    [
+      registration_number, name, course, level_of_study, photo_url,
+      national_id, birth_certificate, date_of_birth, finalPassword
+    ]
   );
   return c.json(rows[0]);
 });
@@ -77,11 +110,54 @@ app.post('/students', async (c) => {
 app.put('/students/:id', async (c) => {
   const id = c.req.param('id');
   const data = await c.req.json();
-  const { registration_number, name, course, level_of_study, photo_url } = data;
+  const { 
+    registration_number, 
+    name, 
+    course, 
+    level_of_study, 
+    photo_url,
+    national_id,
+    birth_certificate,
+    date_of_birth,
+    password
+  } = data;
+  
+  // Get current student data to determine if we need to update password
+  const currentStudent = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
+  if (currentStudent.rows.length === 0) return c.json({ error: 'Student not found' }, 404);
+  
+  // Determine if password should be updated based on ID/birth certificate changes
+  let finalPassword = password;
+  if (!finalPassword) {
+    finalPassword = currentStudent.rows[0].password;
+    
+    // If national_id or birth_certificate changed, update password accordingly
+    if (date_of_birth) {
+      const birthDate = new Date(date_of_birth);
+      const today = new Date();
+      const age = today.getFullYear() - birthDate.getFullYear();
+      
+      if (age >= 18 && national_id && 
+          (national_id !== currentStudent.rows[0].national_id)) {
+        finalPassword = national_id;
+      } else if (birth_certificate && 
+                (birth_certificate !== currentStudent.rows[0].birth_certificate)) {
+        finalPassword = birth_certificate;
+      }
+    }
+  }
+  
   const { rows } = await pool.query(
-    'UPDATE students SET registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5 WHERE id=$6 RETURNING *',
-    [registration_number, name, course, level_of_study, photo_url, id]
+    `UPDATE students SET 
+      registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5,
+      national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9
+    WHERE id=$10 RETURNING *`,
+    [
+      registration_number, name, course, level_of_study, photo_url,
+      national_id, birth_certificate, date_of_birth, finalPassword, id
+    ]
   );
+  
   if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
   return c.json(rows[0]);
 });
@@ -348,6 +424,46 @@ app.post('/auth/admin-login', async (c) => {
 });
 
 app.get('/', (c) => c.text('Student Portal Backend is running!'));
+
+// Student login endpoint
+app.post('/auth/student-login', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { registration_number, password } = body;
+    
+    if (!registration_number || !password) {
+      return c.json({ error: 'Registration number and password required' }, 400);
+    }
+
+    const { rows } = await pool.query('SELECT * FROM students WHERE registration_number = $1', [registration_number]);
+    if (rows.length === 0) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    const student = rows[0];
+    
+    // Direct password comparison (not hashed for simplicity)
+    if (password !== student.password) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    const token = jwt.sign(
+      { registration_number: student.registration_number, student_id: student.id }, 
+      process.env.SECRET_KEY, 
+      { expiresIn: '2h' }
+    );
+    
+    return c.json({ 
+      token, 
+      student_id: student.id,
+      registration_number: student.registration_number,
+      name: student.name
+    });
+  } catch (error) {
+    console.error('Student login error:', error);
+    return c.json({ error: 'Server error during login' }, 500);
+  }
+});
 
 // Exam Card Endpoints
 app.get('/students/:id/exam-card', async (c) => {

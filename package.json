@@ -7,7 +7,8 @@
     "start": "node index.js",
     "build": "echo 'Vercel deployment ready'",
     "init-db": "node initDb.js",
-    "create-admin": "node utils/createAdminUser.js"
+    "create-admin": "node utils/createAdminUser.js",
+    "migrate": "node run-migrations.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
