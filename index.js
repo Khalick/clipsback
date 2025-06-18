@@ -10,6 +10,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
 
+app.use('*', cors())
 // Apply CORS to ALL routes that need it
 app.use('*', cors({
   origin: [
