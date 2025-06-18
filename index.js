@@ -63,102 +63,128 @@ app.get('/students/:id', async (c) => {
 
 // Create a new student
 app.post('/students', async (c) => {
-  const data = await c.req.json();
-  const { 
-    registration_number, 
-    name, 
-    course, 
-    level_of_study, 
-    photo_url,
-    national_id,
-    birth_certificate,
-    date_of_birth,
-    password
-  } = data;
-  
-  // Determine default password if not provided
-  let finalPassword = password;
-  if (!finalPassword) {
-    if (date_of_birth) {
-      const birthDate = new Date(date_of_birth);
-      const today = new Date();
-      const age = today.getFullYear() - birthDate.getFullYear();
-      // Check if student is 18 or older
-      if (age >= 18 && national_id) {
-        finalPassword = national_id;
-      } else if (birth_certificate) {
-        finalPassword = birth_certificate;
+  try {
+    const data = await c.req.json();
+    const { 
+      registration_number, 
+      name, 
+      course, 
+      level_of_study, 
+      photo_url,
+      national_id,
+      birth_certificate,
+      date_of_birth,
+      password
+    } = data;
+    
+    // Determine default password if not provided
+    let finalPassword = password;
+    if (!finalPassword) {
+      if (date_of_birth) {
+        const birthDate = new Date(date_of_birth);
+        const today = new Date();
+        const age = today.getFullYear() - birthDate.getFullYear();
+        // Check if student is 18 or older
+        if (age >= 18 && national_id) {
+          finalPassword = national_id;
+        } else if (birth_certificate) {
+          finalPassword = birth_certificate;
+        }
       }
     }
+    
+    // Hash the password before storing
+    const hashedPassword = await bcrypt.hash(finalPassword || 'defaultpassword', 10);
+    
+    const { rows } = await pool.query(
+      `INSERT INTO students (
+        registration_number, name, course, level_of_study, photo_url,
+        national_id, birth_certificate, date_of_birth, password
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      [
+        registration_number, name, course, level_of_study, photo_url,
+        national_id, birth_certificate, date_of_birth, hashedPassword
+      ]
+    );
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error creating student:', error);
+    return c.json({ error: 'Failed to create student', details: error.message }, 500);
   }
-  
-  const { rows } = await pool.query(
-    `INSERT INTO students (
-      registration_number, name, course, level_of_study, photo_url,
-      national_id, birth_certificate, date_of_birth, password
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
-    [
-      registration_number, name, course, level_of_study, photo_url,
-      national_id, birth_certificate, date_of_birth, finalPassword
-    ]
-  );
-  return c.json(rows[0]);
 });
 
 // Update a student
 app.put('/students/:id', async (c) => {
-  const id = c.req.param('id');
-  const data = await c.req.json();
-  const { 
-    registration_number, 
-    name, 
-    course, 
-    level_of_study, 
-    photo_url,
-    national_id,
-    birth_certificate,
-    date_of_birth,
-    password
-  } = data;
-  
-  // Get current student data to determine if we need to update password
-  const currentStudent = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
-  if (currentStudent.rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-  
-  // Determine if password should be updated based on ID/birth certificate changes
-  let finalPassword = password;
-  if (!finalPassword) {
-    finalPassword = currentStudent.rows[0].password;
+  try {
+    const id = c.req.param('id');
+    const data = await c.req.json();
+    const { 
+      registration_number, 
+      name, 
+      course, 
+      level_of_study, 
+      photo_url,
+      national_id,
+      birth_certificate,
+      date_of_birth,
+      password
+    } = data;
     
-    // If national_id or birth_certificate changed, update password accordingly
-    if (date_of_birth) {
-      const birthDate = new Date(date_of_birth);
-      const today = new Date();
-      const age = today.getFullYear() - birthDate.getFullYear();
+    // Get current student data to determine if we need to update password
+    const currentStudent = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
+    if (currentStudent.rows.length === 0) return c.json({ error: 'Student not found' }, 404);
+    
+    // Determine if password should be updated based on ID/birth certificate changes
+    let finalPassword = password;
+    let shouldHashPassword = false;
+    
+    if (!finalPassword) {
+      // Keep existing password if not changing
+      finalPassword = currentStudent.rows[0].password;
       
-      if (age >= 18 && national_id && 
-          (national_id !== currentStudent.rows[0].national_id)) {
-        finalPassword = national_id;
-      } else if (birth_certificate && 
-                (birth_certificate !== currentStudent.rows[0].birth_certificate)) {
-        finalPassword = birth_certificate;
+      // If national_id or birth_certificate changed, update password accordingly
+      if (date_of_birth) {
+        const birthDate = new Date(date_of_birth);
+        const today = new Date();
+        const age = today.getFullYear() - birthDate.getFullYear();
+        
+        if (age >= 18 && national_id && 
+            (national_id !== currentStudent.rows[0].national_id)) {
+          finalPassword = national_id;
+          shouldHashPassword = true;
+        } else if (birth_certificate && 
+                  (birth_certificate !== currentStudent.rows[0].birth_certificate)) {
+          finalPassword = birth_certificate;
+          shouldHashPassword = true;
+        }
       }
+    } else {
+      // If password was explicitly provided, hash it
+      shouldHashPassword = true;
     }
+    
+    // Hash the password if it's new or changed
+    if (shouldHashPassword) {
+      finalPassword = await bcrypt.hash(finalPassword || 'defaultpassword', 10);
+    }
+    
+    const { rows } = await pool.query(
+      `UPDATE students SET 
+        registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5,
+        national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9
+      WHERE id=$10 RETURNING *`,
+      [
+        registration_number, name, course, level_of_study, photo_url,
+        national_id, birth_certificate, date_of_birth, finalPassword, id
+      ]
+    );
+    
+    if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error updating student:', error);
+    return c.json({ error: 'Failed to update student', details: error.message }, 500);
   }
-  
-  const { rows } = await pool.query(
-    `UPDATE students SET 
-      registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5,
-      national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9
-    WHERE id=$10 RETURNING *`,
-    [
-      registration_number, name, course, level_of_study, photo_url,
-      national_id, birth_certificate, date_of_birth, finalPassword, id
-    ]
-  );
-  
-  if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-  return c.json(rows[0]);
 });
 
 // Delete a student
@@ -441,8 +467,9 @@ app.post('/auth/student-login', async (c) => {
     
     const student = rows[0];
     
-    // Direct password comparison (not hashed for simplicity)
-    if (password !== student.password) {
+    // Compare password with hashed password in database
+    const valid = await bcrypt.compare(password, student.password);
+    if (!valid) {
       return c.json({ error: 'Invalid credentials' }, 401);
     }
     
