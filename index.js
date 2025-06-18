@@ -8,13 +8,13 @@ import { createClient } from '@supabase/supabase-js';
 
 const app = new Hono();
 
-// SINGLE CORS configuration - remove the duplicate
+// SINGLE CORS configuration
 app.use('*', cors({
   origin: [
     'http://localhost:5500', 
     'http://127.0.0.1:5500', 
     'https://studentportaladmin.netlify.app',
-    
+    'https://clipscollegeportal.netlify.app'
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: [
@@ -65,6 +65,8 @@ app.get('/students/:id', async (c) => {
 app.post('/students', async (c) => {
   try {
     const data = await c.req.json();
+    console.log('Received student data:', data);
+    
     const { 
       registration_number, 
       name, 
@@ -77,24 +79,75 @@ app.post('/students', async (c) => {
       password
     } = data;
     
+    // Validate required fields
+    if (!registration_number || !name || !course || !level_of_study) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Registration number, name, course, and level of study are required' 
+      }, 400);
+    }
+    
     // Determine default password if not provided
     let finalPassword = password;
     if (!finalPassword) {
       if (date_of_birth) {
-        const birthDate = new Date(date_of_birth);
-        const today = new Date();
-        const age = today.getFullYear() - birthDate.getFullYear();
-        // Check if student is 18 or older
-        if (age >= 18 && national_id) {
-          finalPassword = national_id;
-        } else if (birth_certificate) {
-          finalPassword = birth_certificate;
+        // Safely parse date
+        let birthDate;
+        try {
+          birthDate = new Date(date_of_birth);
+          if (isNaN(birthDate.getTime())) {
+            throw new Error('Invalid date format');
+          }
+        } catch (err) {
+          console.error('Date parsing error:', err);
+          birthDate = null;
+        }
+        
+        if (birthDate) {
+          const today = new Date();
+          const age = today.getFullYear() - birthDate.getFullYear();
+          // Check if student is 18 or older
+          if (age >= 18 && national_id) {
+            finalPassword = national_id;
+          } else if (birth_certificate) {
+            finalPassword = birth_certificate;
+          }
         }
       }
     }
     
+    // Ensure we have a password to hash
+    if (!finalPassword) {
+      finalPassword = 'defaultpassword';
+    }
+    
     // Hash the password before storing
-    const hashedPassword = await bcrypt.hash(finalPassword || 'defaultpassword', 10);
+    const hashedPassword = await bcrypt.hash(finalPassword, 10);
+    
+    // Format date properly for database
+    let formattedDate = null;
+    if (date_of_birth) {
+      try {
+        const dateObj = new Date(date_of_birth);
+        if (!isNaN(dateObj.getTime())) {
+          formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+        }
+      } catch (err) {
+        console.error('Error formatting date:', err);
+      }
+    }
+    
+    console.log('Inserting student with data:', {
+      registration_number,
+      name,
+      course,
+      level_of_study,
+      photo_url: photo_url || null,
+      national_id: national_id || null,
+      birth_certificate: birth_certificate || null,
+      date_of_birth: formattedDate,
+      password: 'HASHED'
+    });
     
     const { rows } = await pool.query(
       `INSERT INTO students (
@@ -102,14 +155,19 @@ app.post('/students', async (c) => {
         national_id, birth_certificate, date_of_birth, password
       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
-        registration_number, name, course, level_of_study, photo_url,
-        national_id, birth_certificate, date_of_birth, hashedPassword
+        registration_number, name, course, level_of_study, photo_url || null,
+        national_id || null, birth_certificate || null, formattedDate, hashedPassword
       ]
     );
+    
     return c.json(rows[0]);
   } catch (error) {
     console.error('Error creating student:', error);
-    return c.json({ error: 'Failed to create student', details: error.message }, 500);
+    return c.json({ 
+      error: 'Failed to create student', 
+      details: error.message,
+      stack: error.stack
+    }, 500);
   }
 });
 
@@ -118,6 +176,8 @@ app.put('/students/:id', async (c) => {
   try {
     const id = c.req.param('id');
     const data = await c.req.json();
+    console.log('Updating student data:', { id, ...data });
+    
     const { 
       registration_number, 
       name, 
@@ -144,18 +204,31 @@ app.put('/students/:id', async (c) => {
       
       // If national_id or birth_certificate changed, update password accordingly
       if (date_of_birth) {
-        const birthDate = new Date(date_of_birth);
-        const today = new Date();
-        const age = today.getFullYear() - birthDate.getFullYear();
+        // Safely parse date
+        let birthDate;
+        try {
+          birthDate = new Date(date_of_birth);
+          if (isNaN(birthDate.getTime())) {
+            throw new Error('Invalid date format');
+          }
+        } catch (err) {
+          console.error('Date parsing error:', err);
+          birthDate = null;
+        }
         
-        if (age >= 18 && national_id && 
-            (national_id !== currentStudent.rows[0].national_id)) {
-          finalPassword = national_id;
-          shouldHashPassword = true;
-        } else if (birth_certificate && 
-                  (birth_certificate !== currentStudent.rows[0].birth_certificate)) {
-          finalPassword = birth_certificate;
-          shouldHashPassword = true;
+        if (birthDate) {
+          const today = new Date();
+          const age = today.getFullYear() - birthDate.getFullYear();
+          
+          if (age >= 18 && national_id && 
+              (national_id !== currentStudent.rows[0].national_id)) {
+            finalPassword = national_id;
+            shouldHashPassword = true;
+          } else if (birth_certificate && 
+                    (birth_certificate !== currentStudent.rows[0].birth_certificate)) {
+            finalPassword = birth_certificate;
+            shouldHashPassword = true;
+          }
         }
       }
     } else {
@@ -168,14 +241,39 @@ app.put('/students/:id', async (c) => {
       finalPassword = await bcrypt.hash(finalPassword || 'defaultpassword', 10);
     }
     
+    // Format date properly for database
+    let formattedDate = null;
+    if (date_of_birth) {
+      try {
+        const dateObj = new Date(date_of_birth);
+        if (!isNaN(dateObj.getTime())) {
+          formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+        }
+      } catch (err) {
+        console.error('Error formatting date:', err);
+      }
+    }
+    
+    console.log('Updating student with data:', {
+      registration_number,
+      name,
+      course,
+      level_of_study,
+      photo_url: photo_url || null,
+      national_id: national_id || null,
+      birth_certificate: birth_certificate || null,
+      date_of_birth: formattedDate,
+      password: shouldHashPassword ? 'HASHED' : 'UNCHANGED'
+    });
+    
     const { rows } = await pool.query(
       `UPDATE students SET 
         registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5,
         national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9
       WHERE id=$10 RETURNING *`,
       [
-        registration_number, name, course, level_of_study, photo_url,
-        national_id, birth_certificate, date_of_birth, finalPassword, id
+        registration_number, name, course, level_of_study, photo_url || null,
+        national_id || null, birth_certificate || null, formattedDate, finalPassword, id
       ]
     );
     
@@ -183,7 +281,11 @@ app.put('/students/:id', async (c) => {
     return c.json(rows[0]);
   } catch (error) {
     console.error('Error updating student:', error);
-    return c.json({ error: 'Failed to update student', details: error.message }, 500);
+    return c.json({ 
+      error: 'Failed to update student', 
+      details: error.message,
+      stack: error.stack
+    }, 500);
   }
 });
 
@@ -454,6 +556,8 @@ app.get('/', (c) => c.text('Student Portal Backend is running!'));
 app.post('/auth/student-login', async (c) => {
   try {
     const body = await c.req.json();
+    console.log('Student login attempt:', { registration_number: body.registration_number });
+    
     const { registration_number, password } = body;
     
     if (!registration_number || !password) {
@@ -466,11 +570,29 @@ app.post('/auth/student-login', async (c) => {
     }
     
     const student = rows[0];
+    let isAuthenticated = false;
     
-    // Compare password with hashed password in database
-    const valid = await bcrypt.compare(password, student.password);
-    if (!valid) {
+    // First try bcrypt compare (for hashed passwords)
+    try {
+      isAuthenticated = await bcrypt.compare(password, student.password);
+    } catch (err) {
+      console.log('bcrypt compare failed, might be plain text password:', err.message);
+      // If bcrypt compare fails, it might be a plain text password
+      isAuthenticated = (password === student.password);
+    }
+    
+    if (!isAuthenticated) {
       return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    // If login successful with plain text password, update to hashed version
+    if (password === student.password) {
+      console.log('Updating plain text password to hashed version');
+      const hashedPassword = await bcrypt.hash(password, 10);
+      await pool.query(
+        'UPDATE students SET password = $1 WHERE id = $2',
+        [hashedPassword, student.id]
+      );
     }
     
     const token = jwt.sign(
@@ -487,7 +609,11 @@ app.post('/auth/student-login', async (c) => {
     });
   } catch (error) {
     console.error('Student login error:', error);
-    return c.json({ error: 'Server error during login' }, 500);
+    return c.json({ 
+      error: 'Server error during login', 
+      details: error.message,
+      stack: error.stack 
+    }, 500);
   }
 });
 
