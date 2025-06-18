@@ -9,9 +9,22 @@ import { initializeTables } from './utils/initDb.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
-app.use('/api2/*', cors({
-   origin: 'https://studentportaladmin.netlify.app',
-  allowHeaders: ['X-Custom-Header', 'Upgrade-Insecure-Requests','Access-Control-Allow-Origin', 'Content-Type', 'Authorization'],
+
+// Apply CORS to ALL routes that need it
+app.use('*', cors({
+  origin: [
+    'https://studentportaladmin.netlify.app',
+    'http://localhost:3000', // for local development
+    'http://localhost:5173'  // for Vite dev server
+  ],
+  allowHeaders: [
+    'X-Custom-Header', 
+    'Upgrade-Insecure-Requests',
+    'Access-Control-Allow-Origin', 
+    'Content-Type', 
+    'Authorization',
+    'X-Requested-With'
+  ],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   exposeHeaders: ['Content-Length', 'X-Requested-With'],
   maxAge: 86400, // 24 hours in seconds
@@ -24,6 +37,7 @@ app.use('/*', serveStatic({ root: './public' }));
 // Log every request
 app.use('*', async (c, next) => {
   console.log(`[${new Date().toISOString()}] ${c.req.method} ${c.req.path}`);
+  console.log('Headers:', Object.fromEntries(c.req.header()));
   try {
     await next();
   } catch (err) {
@@ -34,6 +48,11 @@ app.use('*', async (c, next) => {
 
 // Supabase Storage setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+
+// Explicit OPTIONS handler for problematic routes
+app.options('/auth/admin-login', (c) => c.text('', 204));
+app.options('/admin/login', (c) => c.text('', 204));
+app.options('/admin/verify-token', (c) => c.text('', 204));
 
 // Get all students
 app.get('/students', async (c) => {
@@ -138,7 +157,6 @@ app.post('/fees', async (c) => {
   return c.json(rows[0]);
 });
 app.put('/fees/:id', async (c) => {
-  const id = c.req.param('id');
   const data = await c.req.json();
   const { student_id, fee_balance, total_paid, semester_fee } = data;
   const { rows } = await pool.query(
@@ -402,17 +420,28 @@ app.post('/units/register', async (c) => {
 });
 
 // Admin login using Supabase admins table and JWT
-
 app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
+  console.log('Origin:', c.req.header('Origin'));
   try {
     const { username, password } = await c.req.json();
+    console.log('Login attempt for username:', username);
+    
     const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
-    if (!admins || admins.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
+    if (!admins || admins.length === 0) {
+      console.log('Admin not found');
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
     const admin = admins[0];
     const valid = await bcrypt.compare(password, admin.password_hash);
-    if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
+    if (!valid) {
+      console.log('Invalid password');
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
     const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
+    console.log('Login successful');
     return c.json({ token, username: admin.username, adminId: admin.id });
   } catch (err) {
     console.error('Login error:', err);
@@ -421,17 +450,28 @@ app.post('/auth/admin-login', async (c) => {
 });
 
 // New endpoint to match the frontend
-
 app.post('/admin/login', async (c) => {
   console.log('Received POST /admin/login');
+  console.log('Origin:', c.req.header('Origin'));
   try {
     const { username, password } = await c.req.json();
+    console.log('Login attempt for username:', username);
+    
     const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
-    if (!admins || admins.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
+    if (!admins || admins.length === 0) {
+      console.log('Admin not found');
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
     const admin = admins[0];
     const valid = await bcrypt.compare(password, admin.password_hash);
-    if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
+    if (!valid) {
+      console.log('Invalid password');
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
     const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
+    console.log('Login successful');
     return c.json({ token, username: admin.username, adminId: admin.id });
   } catch (err) {
     console.error('Login error:', err);
@@ -440,7 +480,6 @@ app.post('/admin/login', async (c) => {
 });
 
 // Verify admin token
-
 app.get('/admin/verify-token', async (c) => {
   try {
     const authHeader = c.req.header('Authorization');
@@ -558,7 +597,7 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
   return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
 });
 
-const port = process.env.PORT || 3001; // Changed to 3001 to avoid conflicts
+const port = process.env.PORT || 3001;
 
 // Initialize database tables before starting the server
 initializeTables()
