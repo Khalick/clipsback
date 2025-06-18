@@ -1,75 +1,22 @@
 import { Hono } from 'hono';
-import { pool, sql } from './db.js';
+import { pool } from './db.js';
+import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
-import { serveStatic } from '@hono/node-server/serve-static';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import fs from 'fs';
 
 const app = new Hono();
-
-// Apply CORS to ALL routes
-app.use('*', async (c, next) => {
-  try {
-    // Get the origin from the request
-    const origin = c.req.header('Origin') || '*';
-    console.log(`Request from origin: ${origin}`);
-    
-    // Set CORS headers for all responses
-    c.header('Access-Control-Allow-Origin', origin);
-    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    c.header('Access-Control-Allow-Headers', 'X-Custom-Header, Upgrade-Insecure-Requests, Access-Control-Allow-Origin, Content-Type, Authorization, Accept, X-Requested-With');
-    c.header('Access-Control-Allow-Credentials', 'true');
-    c.header('Access-Control-Max-Age', '86400');
-    c.header('Access-Control-Expose-Headers', 'Content-Length, X-Requested-With');
-    
-    // Handle preflight requests immediately
-    if (c.req.method === 'OPTIONS') {
-      console.log('Handling OPTIONS preflight request');
-      return c.text('', 204); // Respond with 204 No Content for OPTIONS requests
-    }
-    
-    // Continue with the next middleware/handler for non-OPTIONS requests
-    await next();
-  } catch (err) {
-    console.error('CORS middleware error:', err);
-    return c.text('CORS Error', 500);
-  }
-});
-
-// Get the current file's directory path
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Serve static files from the public directory
-app.use('/*', serveStatic({ 
-  root: join(__dirname, 'public'),
-  rewriteRequestPath: (path) => {
-    // If path is '/', serve index.html
-    if (path === '/') return '/index.html';
-    return path;
-  }
+app.use('*', cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Accept','Access-Control-Allow-Origin'],
+  credentials: true,
 }));
 
 // Log every request
 app.use('*', async (c, next) => {
   console.log(`[${new Date().toISOString()}] ${c.req.method} ${c.req.path}`);
-  
-  // Safely log headers
-  try {
-    // Create a safer version of header logging that won't crash
-    const headers = {};
-    for (const [key, value] of Object.entries(c.req.raw.headers)) {
-      headers[key] = value;
-    }
-    console.log('Headers:', headers);
-  } catch (err) {
-    console.log('Could not log headers:', err.message);
-  }
-  
   try {
     await next();
   } catch (err) {
@@ -79,42 +26,7 @@ app.use('*', async (c, next) => {
 });
 
 // Supabase Storage setup
-let supabase = null;
-try {
-  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-    console.log('Supabase client initialized successfully');
-  } else {
-    console.log('Supabase environment variables not found, storage features will be disabled');
-  }
-} catch (error) {
-  console.error('Failed to initialize Supabase client:', error);
-}
-
-// CORS preflight requests are now handled by the main CORS middleware above
-
-// Root route to show API status
-app.get('/', async (c) => {
-  try {
-    // If HTML is requested, serve the status page
-    if (c.req.header('accept')?.includes('text/html')) {
-      const htmlPath = join(__dirname, 'public', 'index.html');
-      const html = await fs.promises.readFile(htmlPath, 'utf-8');
-      return c.html(html);
-    }
-    
-    // Otherwise return a JSON status
-    return c.json({
-      status: 'running',
-      environment: process.env.NODE_ENV || 'development',
-      timestamp: new Date().toISOString(),
-      api: 'Clips College Student Portal Backend API'
-    });
-  } catch (err) {
-    console.error('Error serving index.html:', err);
-    return c.text('Error serving index.html: ' + err.message, 500);
-  }
-});
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // Get all students
 app.get('/students', async (c) => {
@@ -219,6 +131,7 @@ app.post('/fees', async (c) => {
   return c.json(rows[0]);
 });
 app.put('/fees/:id', async (c) => {
+  const id = c.req.param('id');
   const data = await c.req.json();
   const { student_id, fee_balance, total_paid, semester_fee } = data;
   const { rows } = await pool.query(
@@ -374,271 +287,128 @@ app.post('/students/:id/register-unit', async (c) => {
   return c.json(rows[0]);
 });
 
-// Student promotion route
-app.post('/students/promote', async (c) => {
-  try {
-    const { registration_number, new_year_semester } = await c.req.json();
-    
-    // First, check if the student exists
-    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${registration_number}`;
-    if (!studentResult || studentResult.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    // Update the student's level of study
-    await sql`UPDATE students SET level_of_study = ${new_year_semester} WHERE registration_number = ${registration_number}`;
-    
-    return c.json({ 
-      message: `Student ${registration_number} promoted to ${new_year_semester} successfully`
-    });
-  } catch (error) {
-    console.error('Error promoting student:', error);
-    return c.json({ error: 'Failed to promote student' }, 500);
-  }
-});
-
-// Academic leave route
-app.post('/students/academic-leave', async (c) => {
-  try {
-    const { registration_number } = await c.req.json();
-    
-    // First, check if the student exists
-    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${registration_number}`;
-    if (!studentResult || studentResult.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    // Update the student's status
-    await sql`UPDATE students SET status = 'on_leave' WHERE registration_number = ${registration_number}`;
-    
-    return c.json({ 
-      message: `Academic leave granted for student ${registration_number}`
-    });
-  } catch (error) {
-    console.error('Error granting academic leave:', error);
-    return c.json({ error: 'Failed to grant academic leave' }, 500);
-  }
-});
-
-// Readmit student route
-app.post('/students/readmit', async (c) => {
-  try {
-    const { registration_number } = await c.req.json();
-    
-    // First, check if the student exists
-    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${registration_number}`;
-    if (!studentResult || studentResult.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    // Check if the student is on leave
-    if (studentResult[0].status !== 'on_leave') {
-      return c.json({ error: 'Student is not on academic leave' }, 400);
-    }
-    
-    // Update the student's status
-    await sql`UPDATE students SET status = 'active' WHERE registration_number = ${registration_number}`;
-    
-    return c.json({ 
-      message: `Student ${registration_number} readmitted successfully`
-    });
-  } catch (error) {
-    console.error('Error readmitting student:', error);
-    return c.json({ error: 'Failed to readmit student' }, 500);
-  }
-});
-
-// Register units route
-app.post('/units/register', async (c) => {
-  try {
-    const { student_reg, unit_name, unit_code } = await c.req.json();
-    
-    // First, check if the student exists
-    const studentResult = await sql`SELECT * FROM students WHERE registration_number = ${student_reg}`;
-    if (!studentResult || studentResult.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    // Check if the unit already exists, if not, create it
-    let unitResult = await sql`SELECT * FROM units WHERE code = ${unit_code}`;
-    if (!unitResult || unitResult.length === 0) {
-      unitResult = await sql`INSERT INTO units (name, code) VALUES (${unit_name}, ${unit_code}) RETURNING *`;
-    }
-    
-    // Register the unit for the student
-    await sql`
-      INSERT INTO registered_units (student_id, unit_id) 
-      VALUES (${studentResult[0].id}, ${unitResult[0].id})
-      ON CONFLICT (student_id, unit_id) DO NOTHING
-    `;
-    
-    return c.json({ 
-      message: `Unit ${unit_code} registered successfully for student ${student_reg}`
-    });
-  } catch (error) {
-    console.error('Error registering unit:', error);
-    return c.json({ error: 'Failed to register unit' }, 500);
-  }
-});
-
 // Admin login using Supabase admins table and JWT
+app.options('/auth/admin-login', (c) => {
+  return c.text('OK', 204);
+});
+
 app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
-  console.log('Origin:', c.req.header('Origin'));
-  
-  try {
-    const { username, password } = await c.req.json();
-    console.log('Login attempt for username:', username);
-    
-    const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
-    if (!admins || admins.length === 0) {
-      console.log('Admin not found');
-      return c.json({ error: 'Invalid credentials' }, 401);
-    }
-    
-    const admin = admins[0];
-    const valid = await bcrypt.compare(password, admin.password_hash);
-    if (!valid) {
-      console.log('Invalid password');
-      return c.json({ error: 'Invalid credentials' }, 401);
-    }
-    
-    const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
-    console.log('Login successful');
-    return c.json({ token, username: admin.username, adminId: admin.id });
-  } catch (err) {
-    console.error('Login error:', err);
-    return c.json({ error: 'Authentication failed' }, 500);
-  }
+  const { username, password } = await c.req.json();
+  const { rows } = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
+  if (rows.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
+  const admin = rows[0];
+  const valid = await bcrypt.compare(password, admin.password_hash);
+  if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
+  const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
+  return c.json({ token, username: admin.username });
 });
 
-// New endpoint to match the frontend
-app.post('/admin/login', async (c) => {
-  console.log('Received POST /admin/login');
-  console.log('Origin:', c.req.header('Origin'));
-  
-  try {
-    const { username, password } = await c.req.json();
-    console.log('Login attempt for username:', username);
-    
-    const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
-    if (!admins || admins.length === 0) {
-      console.log('Admin not found');
-      return c.json({ error: 'Invalid credentials' }, 401);
-    }
-    
-    const admin = admins[0];
-    const valid = await bcrypt.compare(password, admin.password_hash);
-    if (!valid) {
-      console.log('Invalid password');
-      return c.json({ error: 'Invalid credentials' }, 401);
-    }
-    
-    const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
-    console.log('Login successful');
-    return c.json({ token, username: admin.username, adminId: admin.id });
-  } catch (err) {
-    console.error('Login error:', err);
-    return c.json({ error: 'Authentication failed' }, 500);
+app.get('/', (c) => c.text('Student Portal Backend is running!'));
+
+// Exam Card Endpoints
+app.get('/students/:id/exam-card', async (c) => {
+  const studentId = c.req.param('id');
+  // Check fee status
+  const { rows: feeRows } = await pool.query(
+    'SELECT fee_balance FROM fees WHERE student_id = $1',
+    [studentId]
+  );
+  if (feeRows.length === 0) return c.json({ error: 'No fee record found' }, 404);
+  if (parseFloat(feeRows[0].fee_balance) > 0) {
+    return c.json({ error: 'Please complete your fee payment to download your exam card.' }, 403);
   }
+  // Get exam card file URL
+  const { rows: cardRows } = await pool.query(
+    'SELECT file_url FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [studentId]
+  );
+  if (cardRows.length === 0) return c.json({ error: 'No exam card found' }, 404);
+  return c.json({ file_url: cardRows[0].file_url });
 });
 
-// Verify admin token
-app.get('/admin/verify-token', async (c) => {
-  try {
-    const authHeader = c.req.header('Authorization');
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    
-    const token = authHeader.substring(7);
-    const decoded = jwt.verify(token, process.env.SECRET_KEY);
-    return c.json({ valid: true, username: decoded.username });
-  } catch (error) {
-    return c.json({ error: 'Invalid token' }, 401);
-  }
+app.post('/students/:id/exam-card', async (c) => {
+  const studentId = c.req.param('id');
+  const { file_url } = await c.req.json();
+  await pool.query(
+    'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
+    [studentId, file_url]
+  );
+  return c.json({ message: 'Exam card uploaded.' });
 });
 
-// Debug route to test CORS configuration
-app.get('/debug/cors', async (c) => {
-  const headers = {};
-  for (const [key, value] of Object.entries(c.req.raw.headers)) {
-    headers[key] = value;
-  }
-  
-  return c.json({
-    message: 'CORS debug information',
-    origin: c.req.header('Origin'),
-    method: c.req.method,
-    path: c.req.path,
-    headers: headers,
-    corsHeaders: {
-      'access-control-allow-origin': c.header('Access-Control-Allow-Origin'),
-      'access-control-allow-methods': c.header('Access-Control-Allow-Methods'),
-      'access-control-allow-headers': c.header('Access-Control-Allow-Headers'),
-      'access-control-allow-credentials': c.header('Access-Control-Allow-Credentials')
-    }
-  });
+// Fee Statement and Receipt Endpoints
+app.get('/students/:id/fee-statement', async (c) => {
+  const studentId = c.req.param('id');
+  const { rows } = await pool.query(
+    'SELECT statement_url FROM finance WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [studentId]
+  );
+  if (rows.length === 0) return c.json({ error: 'No fee statement found' }, 404);
+  return c.json({ statement_url: rows[0].statement_url });
 });
 
-
-// Admin route to create an initial admin user
-app.post('/admin/create-admin', async (c) => {
-  // Security check
-  const secretKey = c.req.header('x-admin-key');
-  
-  if (!secretKey || secretKey !== process.env.SECRET_KEY) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-  
-  try {
-    const { username, password } = await c.req.json();
-    
-    if (!username || !password) {
-      return c.json({ error: 'Username and password are required' }, 400);
-    }
-    
-    // Hash the password
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(password, saltRounds);
-    
-    // Create admin table if it doesn't exist
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS admins (
-        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-        username VARCHAR(255) NOT NULL UNIQUE,
-        password_hash TEXT NOT NULL
-      )
-    `);
-    
-    // Insert the admin user
-    const result = await pool.query(
-      'INSERT INTO admins (username, password_hash) VALUES ($1, $2) RETURNING id, username',
-      [username, passwordHash]
-    );
-    
-    return c.json({ success: true, admin: result.rows[0] });
-  } catch (error) {
-    console.error('Error creating admin user:', error);
-    return c.json({ success: false, error: error.message }, 500);
-  }
+app.get('/students/:id/fee-receipt', async (c) => {
+  const studentId = c.req.param('id');
+  const { rows } = await pool.query(
+    'SELECT receipt_url FROM finance WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+    [studentId]
+  );
+  if (rows.length === 0) return c.json({ error: 'No fee receipt found' }, 404);
+  return c.json({ receipt_url: rows[0].receipt_url });
 });
 
-const port = process.env.PORT || 3001;
+app.post('/students/:id/fee-statement', async (c) => {
+  const studentId = c.req.param('id');
+  const { statement_url } = await c.req.json();
+  await pool.query(
+    'INSERT INTO finance (student_id, statement) VALUES ($1, $2)',
+    [studentId, statement_url]
+  );
+  return c.json({ message: 'Fee statement uploaded.' });
+});
 
-// Export the app for serverless functions
-export { app };
+app.post('/students/:id/fee-receipt', async (c) => {
+  const studentId = c.req.param('id');
+  const { receipt_url } = await c.req.json();
+  await pool.query(
+    'INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)',
+    [studentId, receipt_url]
+  );
+  return c.json({ message: 'Fee receipt uploaded.' });
+});
 
-// Only start the server directly when running locally (not in Netlify functions)
-if (!process.env.NETLIFY) {
-  console.log(`Starting server on port ${port}...`);
-  
-  serve({
-    fetch: app.fetch,
-    port: port
-  });
-  
-  console.log(`Server running on http://localhost:${port}`);
-  console.log('If you don\'t see any errors, the server is running!');
-  console.log('Press Ctrl+C to stop the server');
-}
+// Upload fee statement (admin)
+app.post('/students/:id/upload-fee-statement', async (c) => {
+  const studentId = c.req.param('id');
+  const formData = await c.req.parseBody();
+  const file = formData['file'];
+  if (!file) return c.json({ error: 'No file uploaded' }, 400);
+  const fileName = `fee-statements/${studentId}_${Date.now()}_${file.name}`;
+  const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
+  if (error) return c.json({ error: error.message }, 500);
+  const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
+  await pool.query('INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', [studentId, fileName, publicURL]);
+  return c.json({ message: 'Fee statement uploaded.', url: publicURL });
+});
+
+// Upload fee receipt (admin)
+app.post('/students/:id/upload-fee-receipt', async (c) => {
+  const studentId = c.req.param('id');
+  const formData = await c.req.parseBody();
+  const file = formData['file'];
+  if (!file) return c.json({ error: 'No file uploaded' }, 400);
+  const fileName = `fee-receipts/${studentId}_${Date.now()}_${file.name}`;
+  const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
+  if (error) return c.json({ error: error.message }, 500);
+  const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
+  await pool.query('INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', [studentId, publicURL]);
+  return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
+});
+
+const port = process.env.PORT || 3000;
+console.log(`Server running on http://localhost:${port}`);
+serve({
+  fetch: app.fetch,
+  port: port
+});
