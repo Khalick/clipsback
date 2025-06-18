@@ -5,8 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "build": "bash ./build-netlify.sh",
-    "build:win": "build-netlify.bat",
+    "build": "echo 'Netlify deployment ready'",
     "init-db": "node initDb.js",
     "create-admin": "node utils/createAdminUser.js"
   },
