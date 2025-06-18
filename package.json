@@ -5,9 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "build": "npm run build:dir && npm run build:modules",
-    "build:dir": "if not exist netlify\\functions mkdir netlify\\functions",
-    "build:modules": "if exist node_modules xcopy node_modules netlify\\functions\\node_modules /E /I /Y >nul 2>&1 || echo No node_modules to copy",
+    "build": "mkdir -p netlify/functions && cp -r package.json netlify/functions/",
     "init-db": "node initDb.js",
     "create-admin": "node utils/createAdminUser.js"
   },

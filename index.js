@@ -13,24 +13,31 @@ const app = new Hono();
 
 // Apply CORS to ALL routes
 app.use('*', async (c, next) => {
-  // Get the origin from the request
-  const origin = c.req.header('Origin') || '*';
-  
-  // Set CORS headers for all responses
-  c.header('Access-Control-Allow-Origin', origin);
-  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  c.header('Access-Control-Allow-Headers', 'X-Custom-Header, Upgrade-Insecure-Requests, Access-Control-Allow-Origin, Content-Type, Authorization, Accept, X-Requested-With');
-  c.header('Access-Control-Allow-Credentials', 'true');
-  c.header('Access-Control-Max-Age', '86400');
-  c.header('Access-Control-Expose-Headers', 'Content-Length, X-Requested-With');
-  
-  // Handle preflight requests immediately
-  if (c.req.method === 'OPTIONS') {
-    return c.text('', 204); // Respond with 204 No Content for OPTIONS requests
+  try {
+    // Get the origin from the request
+    const origin = c.req.header('Origin') || '*';
+    console.log(`Request from origin: ${origin}`);
+    
+    // Set CORS headers for all responses
+    c.header('Access-Control-Allow-Origin', origin);
+    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    c.header('Access-Control-Allow-Headers', 'X-Custom-Header, Upgrade-Insecure-Requests, Access-Control-Allow-Origin, Content-Type, Authorization, Accept, X-Requested-With');
+    c.header('Access-Control-Allow-Credentials', 'true');
+    c.header('Access-Control-Max-Age', '86400');
+    c.header('Access-Control-Expose-Headers', 'Content-Length, X-Requested-With');
+    
+    // Handle preflight requests immediately
+    if (c.req.method === 'OPTIONS') {
+      console.log('Handling OPTIONS preflight request');
+      return c.text('', 204); // Respond with 204 No Content for OPTIONS requests
+    }
+    
+    // Continue with the next middleware/handler for non-OPTIONS requests
+    await next();
+  } catch (err) {
+    console.error('CORS middleware error:', err);
+    return c.text('CORS Error', 500);
   }
-  
-  // Continue with the next middleware/handler for non-OPTIONS requests
-  await next();
 });
 
 // Serve static files from the public directory
