@@ -9,13 +9,13 @@ import { initializeTables } from './utils/initDb.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
-app.use('*', cors({
-  origin: ['https://studentportaladmin.netlify.app', 'https://clipscollegebackend.netlify.app'],
+app.use('/api2/*', cors({
+   origin: 'https://studentportaladmin.netlify.app',
+  allowHeaders: ['X-Custom-Header', 'Upgrade-Insecure-Requests','Access-Control-Allow-Origin', 'Content-Type', 'Authorization'],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept'],
   exposeHeaders: ['Content-Length', 'X-Requested-With'],
-  credentials: true,
   maxAge: 86400, // 24 hours in seconds
+  credentials: true
 }));
 
 // Serve static files from the public directory
@@ -402,21 +402,9 @@ app.post('/units/register', async (c) => {
 });
 
 // Admin login using Supabase admins table and JWT
-app.options('/auth/admin-login', (c) => {
-  // Set CORS headers for preflight OPTIONS requests
-  c.header('Access-Control-Allow-Origin', 'https://studentportaladmin.netlify.app');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
-  c.header('Access-Control-Max-Age', '86400');
-  c.header('Access-Control-Allow-Credentials', 'true');
-  return c.text('OK', 204);
-});
 
 app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
-  // Set CORS headers for the actual request
-  c.header('Access-Control-Allow-Origin', 'https://studentportaladmin.netlify.app');
-  c.header('Access-Control-Allow-Credentials', 'true');
   try {
     const { username, password } = await c.req.json();
     const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
@@ -433,21 +421,9 @@ app.post('/auth/admin-login', async (c) => {
 });
 
 // New endpoint to match the frontend
-app.options('/admin/login', (c) => {
-  // Set CORS headers for preflight OPTIONS requests
-  c.header('Access-Control-Allow-Origin', 'https://studentportaladmin.netlify.app');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
-  c.header('Access-Control-Max-Age', '86400');
-  c.header('Access-Control-Allow-Credentials', 'true');
-  return c.text('OK', 204);
-});
 
 app.post('/admin/login', async (c) => {
   console.log('Received POST /admin/login');
-  // Set CORS headers for the actual request
-  c.header('Access-Control-Allow-Origin', 'https://studentportaladmin.netlify.app');
-  c.header('Access-Control-Allow-Credentials', 'true');
   try {
     const { username, password } = await c.req.json();
     const admins = await sql`SELECT * FROM admins WHERE username = ${username}`;
@@ -464,20 +440,8 @@ app.post('/admin/login', async (c) => {
 });
 
 // Verify admin token
-app.options('/admin/verify-token', (c) => {
-  // Set CORS headers for preflight OPTIONS requests
-  c.header('Access-Control-Allow-Origin', 'https://studentportaladmin.netlify.app');
-  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  c.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept');
-  c.header('Access-Control-Max-Age', '86400');
-  c.header('Access-Control-Allow-Credentials', 'true');
-  return c.text('OK', 204);
-});
 
 app.get('/admin/verify-token', async (c) => {
-  // Set CORS headers for the actual request
-  c.header('Access-Control-Allow-Origin', 'https://studentportaladmin.netlify.app');
-  c.header('Access-Control-Allow-Credentials', 'true');
   try {
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
