@@ -4,7 +4,6 @@ import { serve } from '@hono/node-server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
-import { initializeTables } from './utils/initDb.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -80,7 +79,17 @@ app.use('*', async (c, next) => {
 });
 
 // Supabase Storage setup
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+let supabase = null;
+try {
+  if (process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
+    console.log('Supabase client initialized successfully');
+  } else {
+    console.log('Supabase environment variables not found, storage features will be disabled');
+  }
+} catch (error) {
+  console.error('Failed to initialize Supabase client:', error);
+}
 
 // CORS preflight requests are now handled by the main CORS middleware above
 
@@ -572,24 +581,6 @@ app.get('/debug/cors', async (c) => {
   });
 });
 
-// Special route for initializing the database in production
-// This should be secured and only called once or when needed
-app.post('/admin/init-db', async (c) => {
-  // Simple security check - you should use a more secure approach in production
-  const secretKey = c.req.header('x-admin-key');
-  
-  if (!secretKey || secretKey !== process.env.SECRET_KEY) {
-    return c.json({ error: 'Unauthorized' }, 401);
-  }
-  
-  try {
-    await initializeTables();
-    return c.json({ success: true, message: 'Database initialized successfully' });
-  } catch (error) {
-    console.error('Error initializing database:', error);
-    return c.json({ success: false, error: error.message }, 500);
-  }
-});
 
 // Admin route to create an initial admin user
 app.post('/admin/create-admin', async (c) => {

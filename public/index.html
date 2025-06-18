@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clips College Backend</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            color: #333;
+        }
+        .container {
+            background-color: #fff;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            text-align: center;
+            max-width: 600px;
+            width: 100%;
+        }
+        h1 {
+            color: #4a90e2;
+            margin-bottom: 10px;
+        }
+        .status {
+            font-size: 1.2rem;
+            margin: 20px 0;
+            color: #28a745;
+            font-weight: bold;
+        }
+        .logo {
+            width: 120px;
+            height: 120px;
+            background-color: #4a90e2;
+            margin: 0 auto 20px;
+            border-radius: 50%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 3rem;
+            font-weight: bold;
+        }
+        .endpoints {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin: 20px 0;
+            text-align: left;
+        }
+        .endpoint {
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        footer {
+            margin-top: 30px;
+            font-size: 0.8rem;
+            color: #777;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">CC</div>
+        <h1>Clips College Backend</h1>
+        <p class="status">✅ Server running successfully</p>
+        
+        <p>This is the backend API server for the Clips College Student Portal.</p>        <div class="endpoints">
+            <h3>Available Endpoints:</h3>
+            <div class="endpoint">- /api/ - API root (status)</div>
+            <div class="endpoint">- /api/debug/cors - CORS debugging information</div>
+        </div>
+        
+        <div class="note" style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 10px; margin: 20px 0; text-align: left;">
+            <strong>Note:</strong> We have simplified the API for Netlify Edge Functions. All API endpoints are prefixed with <code>/api</code>.
+        </div>
+        
+        <div class="note" style="background-color: #d4edda; border-left: 4px solid #28a745; padding: 10px; margin: 20px 0; text-align: left;">
+            <strong>Status:</strong> The API is currently in maintenance mode with limited endpoints available. Full functionality will be restored soon.
+        </div>
+        
+        <footer>
+            &copy; <span id="year"></span> Clips College Student Portal
+            <script>
+                document.getElementById('year').textContent = new Date().getFullYear();
+            </script>
+        </footer>
+    </div>
+</body>
+</html>
