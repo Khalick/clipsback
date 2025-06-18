@@ -1,10 +1,12 @@
 # Netlify configuration file
 
 [build]
-  # Build command - we're not running database init during build anymore
+  # Build command for setting up the serverless functions
   command = "npm run build"
   # Directory with static files
   publish = "public"
+  # Define environment variables needed for the build
+  environment = { NODE_VERSION = "18" }
   
 # Redirect all requests to our server function
 [[redirects]]
@@ -12,6 +14,12 @@
   to = "/.netlify/functions/server"
   status = 200
   force = true
+  
+# Add a redirect to handle root path access to the API properly
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/server/:splat"
+  status = 200
 
 # Define headers for CORS and security
 [[headers]]

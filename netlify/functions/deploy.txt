@@ -1,0 +1,26 @@
+NETLIFY DEPLOYMENT NOTES
+
+1. To deploy this project to Netlify:
+   - Connect your GitHub repository to Netlify
+   - Set the required environment variables in the Netlify dashboard
+   - Deploy and verify the functions are working
+
+2. Required environment variables:
+   - DATABASE_URL (PostgreSQL connection string)
+   - SECRET_KEY (JWT secret key)
+   - SUPABASE_URL (if using Supabase)
+   - SUPABASE_SERVICE_ROLE_KEY (if using Supabase)
+   
+3. After deployment, initialize the database by making a POST request:
+   curl -X POST https://your-site.netlify.app/.netlify/functions/server/admin/init-db \
+     -H "x-admin-key: YOUR_SECRET_KEY"
+     
+4. Create your admin user:
+   curl -X POST https://your-site.netlify.app/.netlify/functions/server/admin/create-admin \
+     -H "x-admin-key: YOUR_SECRET_KEY" \
+     -H "Content-Type: application/json" \
+     -d '{"username":"admin","password":"secure_password"}'
+
+5. Access your API at:
+   - https://your-site.netlify.app/.netlify/functions/server (direct)
+   - https://your-site.netlify.app/ (redirected)

@@ -1,13 +1,17 @@
 {
+  "name": "clips-college-api-function",
+  "version": "1.0.0",
   "type": "module",
   "dependencies": {
     "@hono/node-server": "^1.14.4",
     "@netlify/functions": "^2.0.0",
     "@supabase/supabase-js": "^2.50.0",
     "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "hono": "^4.7.11",
     "jsonwebtoken": "^9.0.2",
+    "pg": "^8.16.0",
     "postgres": "^3.4.7",
     "serverless-http": "^3.2.0"
   }
