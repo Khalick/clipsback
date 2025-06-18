@@ -1,0 +1,16 @@
+[build]
+  command = "# no build command needed"
+  publish = "public"
+  functions = "netlify/functions"
+
+# Redirect API requests to the serverless function
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+
+# Serve static files from the public directory
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
