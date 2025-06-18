@@ -7,31 +7,31 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 import { initializeTables } from './utils/initDb.js';
 import { serveStatic } from '@hono/node-server/serve-static';
+import fs from 'fs';
 
 const app = new Hono();
 
-// Apply CORS to ALL routes that need it
-app.use('*', cors({
-  origin: [
-    'https://studentportaladmin.netlify.app',
-    'http://localhost:3000', // for local development
-    'http://localhost:5173',  // for Vite dev server
-    'http://127.0.0.1:5500'   // for local development with Live Server
-  ],
-  allowHeaders: [
-    'X-Custom-Header', 
-    'Upgrade-Insecure-Requests',
-    'Access-Control-Allow-Origin', 
-    'Content-Type', 
-    'Authorization',
-    'X-Requested-With'
-  ],
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  exposeHeaders: ['Content-Length', 'X-Requested-With'],
-  maxAge: 86400, // 24 hours in seconds
-  credentials: true,
-  preflight: true // Ensure preflight requests are handled properly
-}));
+// Apply CORS to ALL routes
+app.use('*', async (c, next) => {
+  // Get the origin from the request
+  const origin = c.req.header('Origin') || '*';
+  
+  // Set CORS headers for all responses
+  c.header('Access-Control-Allow-Origin', origin);
+  c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  c.header('Access-Control-Allow-Headers', 'X-Custom-Header, Upgrade-Insecure-Requests, Access-Control-Allow-Origin, Content-Type, Authorization, Accept, X-Requested-With');
+  c.header('Access-Control-Allow-Credentials', 'true');
+  c.header('Access-Control-Max-Age', '86400');
+  c.header('Access-Control-Expose-Headers', 'Content-Length, X-Requested-With');
+  
+  // Handle preflight requests immediately
+  if (c.req.method === 'OPTIONS') {
+    return c.text('', 204); // Respond with 204 No Content for OPTIONS requests
+  }
+  
+  // Continue with the next middleware/handler for non-OPTIONS requests
+  await next();
+});
 
 // Serve static files from the public directory
 app.use('/*', serveStatic({ root: './public' }));
@@ -39,7 +39,19 @@ app.use('/*', serveStatic({ root: './public' }));
 // Log every request
 app.use('*', async (c, next) => {
   console.log(`[${new Date().toISOString()}] ${c.req.method} ${c.req.path}`);
-  console.log('Headers:', Object.fromEntries(c.req.header()));
+  
+  // Safely log headers
+  try {
+    // Create a safer version of header logging that won't crash
+    const headers = {};
+    for (const [key, value] of Object.entries(c.req.raw.headers)) {
+      headers[key] = value;
+    }
+    console.log('Headers:', headers);
+  } catch (err) {
+    console.log('Could not log headers:', err.message);
+  }
+  
   try {
     await next();
   } catch (err) {
@@ -51,34 +63,21 @@ app.use('*', async (c, next) => {
 // Supabase Storage setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Explicit OPTIONS handler for problematic routes
-app.options('/auth/admin-login', (c) => {
-  return c.text('', 204, {
-    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-    'Access-Control-Max-Age': '86400',
-    'Access-Control-Allow-Credentials': 'true'
-  });
-});
+// CORS preflight requests are now handled by the main CORS middleware above
 
-app.options('/admin/login', (c) => {
-  return c.text('', 204, {
-    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-    'Access-Control-Max-Age': '86400',
-    'Access-Control-Allow-Credentials': 'true'
-  });
-});
-
-app.options('/admin/verify-token', (c) => {
-  return c.text('', 204, {
-    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
-    'Access-Control-Max-Age': '86400',
-    'Access-Control-Allow-Credentials': 'true'
+// Root route to show API status
+app.get('/', async (c) => {
+  // If HTML is requested, serve the status page
+  if (c.req.header('accept')?.includes('text/html')) {
+    return c.html(await fs.promises.readFile('./public/index.html', 'utf-8'));
+  }
+  
+  // Otherwise return a JSON status
+  return c.json({
+    status: 'running',
+    environment: process.env.NODE_ENV || 'development',
+    timestamp: new Date().toISOString(),
+    api: 'Clips College Student Portal Backend API'
   });
 });
 
@@ -452,13 +451,6 @@ app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
   console.log('Origin:', c.req.header('Origin'));
   
-  // Set CORS headers explicitly for this route
-  const origin = c.req.header('Origin');
-  if (origin) {
-    c.header('Access-Control-Allow-Origin', origin);
-    c.header('Access-Control-Allow-Credentials', 'true');
-  }
-  
   try {
     const { username, password } = await c.req.json();
     console.log('Login attempt for username:', username);
@@ -490,13 +482,6 @@ app.post('/admin/login', async (c) => {
   console.log('Received POST /admin/login');
   console.log('Origin:', c.req.header('Origin'));
   
-  // Set CORS headers explicitly for this route
-  const origin = c.req.header('Origin');
-  if (origin) {
-    c.header('Access-Control-Allow-Origin', origin);
-    c.header('Access-Control-Allow-Credentials', 'true');
-  }
-  
   try {
     const { username, password } = await c.req.json();
     console.log('Login attempt for username:', username);
@@ -525,13 +510,6 @@ app.post('/admin/login', async (c) => {
 
 // Verify admin token
 app.get('/admin/verify-token', async (c) => {
-  // Set CORS headers explicitly for this route
-  const origin = c.req.header('Origin');
-  if (origin) {
-    c.header('Access-Control-Allow-Origin', origin);
-    c.header('Access-Control-Allow-Credentials', 'true');
-  }
-  
   try {
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -546,120 +524,104 @@ app.get('/admin/verify-token', async (c) => {
   }
 });
 
-app.get('/', (c) => c.text('Student Portal Backend is running!'));
-
-// Exam Card Endpoints
-app.get('/students/:id/exam-card', async (c) => {
-  const studentId = c.req.param('id');
-  // Check fee status
-  const { rows: feeRows } = await pool.query(
-    'SELECT fee_balance FROM fees WHERE student_id = $1',
-    [studentId]
-  );
-  if (feeRows.length === 0) return c.json({ error: 'No fee record found' }, 404);
-  if (parseFloat(feeRows[0].fee_balance) > 0) {
-    return c.json({ error: 'Please complete your fee payment to download your exam card.' }, 403);
+// Debug route to test CORS configuration
+app.get('/debug/cors', async (c) => {
+  const headers = {};
+  for (const [key, value] of Object.entries(c.req.raw.headers)) {
+    headers[key] = value;
   }
-  // Get exam card file URL
-  const { rows: cardRows } = await pool.query(
-    'SELECT file_url FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
-    [studentId]
-  );
-  if (cardRows.length === 0) return c.json({ error: 'No exam card found' }, 404);
-  return c.json({ file_url: cardRows[0].file_url });
+  
+  return c.json({
+    message: 'CORS debug information',
+    origin: c.req.header('Origin'),
+    method: c.req.method,
+    path: c.req.path,
+    headers: headers,
+    corsHeaders: {
+      'access-control-allow-origin': c.header('Access-Control-Allow-Origin'),
+      'access-control-allow-methods': c.header('Access-Control-Allow-Methods'),
+      'access-control-allow-headers': c.header('Access-Control-Allow-Headers'),
+      'access-control-allow-credentials': c.header('Access-Control-Allow-Credentials')
+    }
+  });
 });
 
-app.post('/students/:id/exam-card', async (c) => {
-  const studentId = c.req.param('id');
-  const { file_url } = await c.req.json();
-  await pool.query(
-    'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
-    [studentId, file_url]
-  );
-  return c.json({ message: 'Exam card uploaded.' });
+// Special route for initializing the database in production
+// This should be secured and only called once or when needed
+app.post('/admin/init-db', async (c) => {
+  // Simple security check - you should use a more secure approach in production
+  const secretKey = c.req.header('x-admin-key');
+  
+  if (!secretKey || secretKey !== process.env.SECRET_KEY) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  try {
+    await initializeTables();
+    return c.json({ success: true, message: 'Database initialized successfully' });
+  } catch (error) {
+    console.error('Error initializing database:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
 });
 
-// Fee Statement and Receipt Endpoints
-app.get('/students/:id/fee-statement', async (c) => {
-  const studentId = c.req.param('id');
-  const { rows } = await pool.query(
-    'SELECT statement_url FROM finance WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
-    [studentId]
-  );
-  if (rows.length === 0) return c.json({ error: 'No fee statement found' }, 404);
-  return c.json({ statement_url: rows[0].statement_url });
-});
-
-app.get('/students/:id/fee-receipt', async (c) => {
-  const studentId = c.req.param('id');
-  const { rows } = await pool.query(
-    'SELECT receipt_url FROM finance WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
-    [studentId]
-  );
-  if (rows.length === 0) return c.json({ error: 'No fee receipt found' }, 404);
-  return c.json({ receipt_url: rows[0].receipt_url });
-});
-
-app.post('/students/:id/fee-statement', async (c) => {
-  const studentId = c.req.param('id');
-  const { statement_url } = await c.req.json();
-  await pool.query(
-    'INSERT INTO finance (student_id, statement) VALUES ($1, $2)',
-    [studentId, statement_url]
-  );
-  return c.json({ message: 'Fee statement uploaded.' });
-});
-
-app.post('/students/:id/fee-receipt', async (c) => {
-  const studentId = c.req.param('id');
-  const { receipt_url } = await c.req.json();
-  await pool.query(
-    'INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)',
-    [studentId, receipt_url]
-  );
-  return c.json({ message: 'Fee receipt uploaded.' });
-});
-
-// Upload fee statement (admin)
-app.post('/students/:id/upload-fee-statement', async (c) => {
-  const studentId = c.req.param('id');
-  const formData = await c.req.parseBody();
-  const file = formData['file'];
-  if (!file) return c.json({ error: 'No file uploaded' }, 400);
-  const fileName = `fee-statements/${studentId}_${Date.now()}_${file.name}`;
-  const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
-  if (error) return c.json({ error: error.message }, 500);
-  const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
-  await pool.query('INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', [studentId, fileName, publicURL]);
-  return c.json({ message: 'Fee statement uploaded.', url: publicURL });
-});
-
-// Upload fee receipt (admin)
-app.post('/students/:id/upload-fee-receipt', async (c) => {
-  const studentId = c.req.param('id');
-  const formData = await c.req.parseBody();
-  const file = formData['file'];
-  if (!file) return c.json({ error: 'No file uploaded' }, 400);
-  const fileName = `fee-receipts/${studentId}_${Date.now()}_${file.name}`;
-  const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
-  if (error) return c.json({ error: error.message }, 500);
-  const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
-  await pool.query('INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', [studentId, publicURL]);
-  return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
+// Admin route to create an initial admin user
+app.post('/admin/create-admin', async (c) => {
+  // Security check
+  const secretKey = c.req.header('x-admin-key');
+  
+  if (!secretKey || secretKey !== process.env.SECRET_KEY) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+  
+  try {
+    const { username, password } = await c.req.json();
+    
+    if (!username || !password) {
+      return c.json({ error: 'Username and password are required' }, 400);
+    }
+    
+    // Hash the password
+    const saltRounds = 10;
+    const passwordHash = await bcrypt.hash(password, saltRounds);
+    
+    // Create admin table if it doesn't exist
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS admins (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        username VARCHAR(255) NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL
+      )
+    `);
+    
+    // Insert the admin user
+    const result = await pool.query(
+      'INSERT INTO admins (username, password_hash) VALUES ($1, $2) RETURNING id, username',
+      [username, passwordHash]
+    );
+    
+    return c.json({ success: true, admin: result.rows[0] });
+  } catch (error) {
+    console.error('Error creating admin user:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
 });
 
 const port = process.env.PORT || 3001;
 
-// Initialize database tables before starting the server
-initializeTables()
-  .then(() => {
-    console.log(`Server running on http://localhost:${port}`);
-    serve({
-      fetch: app.fetch,
-      port: port
-    });
-  })
-  .catch(err => {
-    console.error('Failed to initialize database:', err);
-    process.exit(1);
+// Export the app for serverless functions
+export { app };
+
+// Only start the server directly when running locally (not in Netlify functions)
+if (!process.env.NETLIFY) {
+  console.log(`Starting server on port ${port}...`);
+  
+  serve({
+    fetch: app.fetch,
+    port: port
   });
+  
+  console.log(`Server running on http://localhost:${port}`);
+  console.log('If you don\'t see any errors, the server is running!');
+  console.log('Press Ctrl+C to stop the server');
+}

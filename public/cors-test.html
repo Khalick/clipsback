@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CORS Test Page</title>
+    <style>
+        body {
+            font-family: 'Arial', sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        button {
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:hover {
+            background-color: #3a80d2;
+        }
+        #output {
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        .endpoint {
+            margin-bottom: 20px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 15px;
+        }
+        h2 {
+            color: #333;
+        }
+        input[type="text"], input[type="password"] {
+            padding: 8px;
+            margin: 5px 0;
+            width: 200px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <h1>CORS Test Page</h1>
+    <p>This page helps you test CORS configuration with your backend API.</p>
+    
+    <div class="endpoint">
+        <h2>Test CORS Debug Endpoint</h2>
+        <button id="testCorsDebug">Test CORS Debug</button>
+    </div>
+
+    <div class="endpoint">
+        <h2>Test Admin Login</h2>
+        <div>
+            <label for="username">Username:</label>
+            <input type="text" id="username" value="Admin">
+        </div>
+        <div>
+            <label for="password">Password:</label>
+            <input type="password" id="password" value="Admin123">
+        </div>
+        <button id="testAdminLogin">Test Admin Login</button>
+    </div>
+
+    <h2>Response:</h2>
+    <div id="output">Results will appear here...</div>
+
+    <script>
+        const backendUrl = window.location.origin.includes('localhost') 
+            ? 'http://localhost:3001' 
+            : window.location.origin;
+        
+        document.getElementById('testCorsDebug').addEventListener('click', async () => {
+            try {
+                const output = document.getElementById('output');
+                output.textContent = 'Testing CORS debug endpoint...';
+                
+                const response = await fetch(`${backendUrl}/debug/cors`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include'
+                });
+                
+                const data = await response.json();
+                output.textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('output').textContent = `Error: ${error.message}`;
+                console.error('Error testing CORS debug:', error);
+            }
+        });
+
+        document.getElementById('testAdminLogin').addEventListener('click', async () => {
+            try {
+                const output = document.getElementById('output');
+                const username = document.getElementById('username').value;
+                const password = document.getElementById('password').value;
+                
+                output.textContent = `Testing admin login with username: ${username}...`;
+                
+                // Try the /auth/admin-login endpoint first
+                try {
+                    const response = await fetch(`${backendUrl}/auth/admin-login`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        credentials: 'include',
+                        body: JSON.stringify({ username, password })
+                    });
+                    
+                    const data = await response.json();
+                    output.textContent = 'Response from /auth/admin-login:\n' + JSON.stringify(data, null, 2);
+                    return;
+                } catch (error) {
+                    console.log('First endpoint failed, trying second endpoint');
+                }
+                
+                // If first endpoint fails, try the /admin/login endpoint
+                const response = await fetch(`${backendUrl}/admin/login`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    credentials: 'include',
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const data = await response.json();
+                output.textContent = 'Response from /admin/login:\n' + JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('output').textContent = `Error: ${error.message}`;
+                console.error('Error testing admin login:', error);
+            }
+        });
+    </script>
+</body>
+</html>

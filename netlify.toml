@@ -1,0 +1,27 @@
+# Netlify configuration file
+
+[build]
+  # Build command - we're not running database init during build anymore
+  command = "npm run build"
+  # Directory with static files
+  publish = "public"
+  
+# Redirect all requests to our server function
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/server"
+  status = 200
+  force = true
+
+# Define headers for CORS and security
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    # Let the server code handle CORS dynamically based on Origin
+    # Access-Control-Allow-Origin is set by our server middleware
+    Access-Control-Allow-Methods = "GET, POST, PUT, DELETE, OPTIONS"
+    Access-Control-Allow-Headers = "Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Custom-Header, Upgrade-Insecure-Requests, Access-Control-Allow-Origin"
+    Access-Control-Allow-Credentials = "true"
+    Access-Control-Max-Age = "86400"
