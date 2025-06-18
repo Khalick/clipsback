@@ -17,6 +17,9 @@ export const pool = {
       return { rows: result };
     } catch (error) {
       console.error('Database query error:', error);
+      console.error('Query:', text);
+      console.error('Parameters:', params);
+      console.error('Error details:', error.message);
       throw error;
     }
   }

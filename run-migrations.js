@@ -8,24 +8,19 @@ const __dirname = path.dirname(__filename);
 
 async function runMigration() {
   try {
+    // Run the first migration to add columns
     console.log('Running migration: add_password_to_students.sql');
-    const sql = fs.readFileSync(path.join(__dirname, 'migrations', 'add_password_to_students.sql'), 'utf8');
+    const sql1 = fs.readFileSync(path.join(__dirname, 'migrations', 'add_password_to_students.sql'), 'utf8');
+    await pool.query(sql1);
+    console.log('Added columns and updated data');
     
-    // Split SQL into separate statements to handle errors individually
-    const statements = sql.split(';').filter(stmt => stmt.trim());
+    // Run the second migration to create trigger
+    console.log('Running migration: create_password_trigger.sql');
+    const sql2 = fs.readFileSync(path.join(__dirname, 'migrations', 'create_password_trigger.sql'), 'utf8');
+    await pool.query(sql2);
+    console.log('Created trigger function');
     
-    for (const statement of statements) {
-      if (statement.trim()) {
-        try {
-          await pool.query(statement + ';');
-          console.log('Executed statement successfully');
-        } catch (err) {
-          console.log(`Statement skipped (might already exist): ${err.message}`);
-        }
-      }
-    }
-    
-    console.log('Migration completed');
+    console.log('Migration completed successfully');
   } catch (error) {
     console.error('Migration failed:', error);
   }
