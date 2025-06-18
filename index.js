@@ -13,9 +13,8 @@ app.use('*', cors({
   origin: [
     'http://localhost:5500', 
     'http://127.0.0.1:5500', 
-    'https://yourdomain.com',
-    'http://localhost:3000',  // Add common development ports
-    'http://127.0.0.1:3000'
+    'https://studentportaladmin.netlify.app',
+    
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: [
