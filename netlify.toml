@@ -2,7 +2,7 @@
 
 [build]
   # Build command for setting up the serverless functions
-  command = "npm run build"
+  command = "npm install && npm run build"
   # Directory with static files
   publish = "public"
   # Define environment variables needed for the build

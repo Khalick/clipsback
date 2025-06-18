@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import { pool, sql } from './db.js';
-import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
