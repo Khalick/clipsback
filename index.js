@@ -10,13 +10,13 @@ import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
 
-app.use('*', cors())
 // Apply CORS to ALL routes that need it
 app.use('*', cors({
   origin: [
     'https://studentportaladmin.netlify.app',
     'http://localhost:3000', // for local development
-    'http://localhost:5173'  // for Vite dev server
+    'http://localhost:5173',  // for Vite dev server
+    'http://127.0.0.1:5500'   // for local development with Live Server
   ],
   allowHeaders: [
     'X-Custom-Header', 
