@@ -14,6 +14,9 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept'], // Remove 'Access-Control-Allow-Origin'
   credentials: true,
+  exposeHeaders: ['Content-Length', 'X-Total-Count'],
+  optionsSuccessStatus: 200,
+  preflightContinue: false,
   maxAge: 86400 // Cache preflight for 24 hours
 }));
 
