@@ -28,7 +28,8 @@ app.use('*', cors({
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   exposeHeaders: ['Content-Length', 'X-Requested-With'],
   maxAge: 86400, // 24 hours in seconds
-  credentials: true
+  credentials: true,
+  preflight: true // Ensure preflight requests are handled properly
 }));
 
 // Serve static files from the public directory
@@ -50,9 +51,35 @@ app.use('*', async (c, next) => {
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // Explicit OPTIONS handler for problematic routes
-app.options('/auth/admin-login', (c) => c.text('', 204));
-app.options('/admin/login', (c) => c.text('', 204));
-app.options('/admin/verify-token', (c) => c.text('', 204));
+app.options('/auth/admin-login', (c) => {
+  return c.text('', 204, {
+    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+    'Access-Control-Max-Age': '86400',
+    'Access-Control-Allow-Credentials': 'true'
+  });
+});
+
+app.options('/admin/login', (c) => {
+  return c.text('', 204, {
+    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
+    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+    'Access-Control-Max-Age': '86400',
+    'Access-Control-Allow-Credentials': 'true'
+  });
+});
+
+app.options('/admin/verify-token', (c) => {
+  return c.text('', 204, {
+    'Access-Control-Allow-Origin': c.req.header('Origin') || '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+    'Access-Control-Max-Age': '86400',
+    'Access-Control-Allow-Credentials': 'true'
+  });
+});
 
 // Get all students
 app.get('/students', async (c) => {
@@ -423,6 +450,14 @@ app.post('/units/register', async (c) => {
 app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
   console.log('Origin:', c.req.header('Origin'));
+  
+  // Set CORS headers explicitly for this route
+  const origin = c.req.header('Origin');
+  if (origin) {
+    c.header('Access-Control-Allow-Origin', origin);
+    c.header('Access-Control-Allow-Credentials', 'true');
+  }
+  
   try {
     const { username, password } = await c.req.json();
     console.log('Login attempt for username:', username);
@@ -453,6 +488,14 @@ app.post('/auth/admin-login', async (c) => {
 app.post('/admin/login', async (c) => {
   console.log('Received POST /admin/login');
   console.log('Origin:', c.req.header('Origin'));
+  
+  // Set CORS headers explicitly for this route
+  const origin = c.req.header('Origin');
+  if (origin) {
+    c.header('Access-Control-Allow-Origin', origin);
+    c.header('Access-Control-Allow-Credentials', 'true');
+  }
+  
   try {
     const { username, password } = await c.req.json();
     console.log('Login attempt for username:', username);
@@ -481,6 +524,13 @@ app.post('/admin/login', async (c) => {
 
 // Verify admin token
 app.get('/admin/verify-token', async (c) => {
+  // Set CORS headers explicitly for this route
+  const origin = c.req.header('Origin');
+  if (origin) {
+    c.header('Access-Control-Allow-Origin', origin);
+    c.header('Access-Control-Allow-Credentials', 'true');
+  }
+  
   try {
     const authHeader = c.req.header('Authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
