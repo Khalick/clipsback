@@ -7,11 +7,14 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 
 const app = new Hono();
+app.use('*', cors());
+
 app.use('*', cors({
-  origin: '*',
+  origin: ['http://localhost:5500', 'http://127.0.0.1:5500', 'https://yourdomain.com'], // Add your production domain
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept','Access-Control-Allow-Origin'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Accept'], // Remove 'Access-Control-Allow-Origin'
   credentials: true,
+  maxAge: 86400 // Cache preflight for 24 hours
 }));
 
 // Log every request

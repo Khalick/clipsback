@@ -9,8 +9,15 @@ export const sql = postgres(process.env.DATABASE_URL, {
 
 // Export a wrapper to maintain compatibility with existing code that uses pool.query
 export const pool = {
-  query: (text, params) => {
-    // Convert pg style queries to postgres style
-    return sql.unsafe(text, params);
+  query: async (text, params = []) => {
+    try {
+      // The postgres package returns results directly as an array
+      // We need to wrap it in a { rows: [] } structure to match pg interface
+      const result = await sql.unsafe(text, params);
+      return { rows: result };
+    } catch (error) {
+      console.error('Database query error:', error);
+      throw error;
+    }
   }
 };
