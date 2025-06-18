@@ -7,22 +7,36 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 
 const app = new Hono();
-app.use('*', cors());
 
+// SINGLE CORS configuration - remove the duplicate
 app.use('*', cors({
-  origin: ['http://localhost:5500', 'http://127.0.0.1:5500', 'https://yourdomain.com'], // Add your production domain
+  origin: [
+    'http://localhost:5500', 
+    'http://127.0.0.1:5500', 
+    'https://yourdomain.com',
+    'http://localhost:3000',  // Add common development ports
+    'http://127.0.0.1:3000'
+  ],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept'], // Remove 'Access-Control-Allow-Origin'
+  allowHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'Accept',
+    'Origin',
+    'X-Requested-With'
+  ],
   credentials: true,
   exposeHeaders: ['Content-Length', 'X-Total-Count'],
   optionsSuccessStatus: 200,
-  preflightContinue: false,
   maxAge: 86400 // Cache preflight for 24 hours
 }));
 
 // Log every request
 app.use('*', async (c, next) => {
   console.log(`[${new Date().toISOString()}] ${c.req.method} ${c.req.path}`);
+  console.log('Origin:', c.req.header('origin'));
+  console.log('Headers:', Object.fromEntries(c.req.raw.headers.entries()));
+  
   try {
     await next();
   } catch (err) {
@@ -185,7 +199,7 @@ app.put('/timetables/:id', async (c) => {
   return c.json(rows[0]);
 });
 app.delete('/timetables/:id', async (c) => {
-  const id = c.req.param('id');
+  const id, c.req.param('id');
   await pool.query('DELETE FROM timetables WHERE id = $1', [id]);
   return c.json({ message: 'Timetable deleted' });
 });
@@ -277,6 +291,7 @@ app.post('/units', async (c) => {
   );
   return c.json(rows[0]);
 });
+
 // Register a unit for a student (student registers a unit)
 app.post('/students/:id/register-unit', async (c) => {
   const student_id = c.req.param('id');
@@ -293,21 +308,43 @@ app.post('/students/:id/register-unit', async (c) => {
   return c.json(rows[0]);
 });
 
-// Admin login using Supabase admins table and JWT
-app.options('/auth/admin-login', (c) => {
-  return c.text('OK', 204);
-});
-
+// Admin login - SIMPLIFIED without separate OPTIONS handler
 app.post('/auth/admin-login', async (c) => {
   console.log('Received POST /auth/admin-login');
-  const { username, password } = await c.req.json();
-  const { rows } = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
-  if (rows.length === 0) return c.json({ error: 'Invalid credentials' }, 401);
-  const admin = rows[0];
-  const valid = await bcrypt.compare(password, admin.password_hash);
-  if (!valid) return c.json({ error: 'Invalid credentials' }, 401);
-  const token = jwt.sign({ username: admin.username, admin_id: admin.id }, process.env.SECRET_KEY, { expiresIn: '2h' });
-  return c.json({ token, username: admin.username });
+  console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()));
+  
+  try {
+    const body = await c.req.json();
+    console.log('Request body:', body);
+    
+    const { username, password } = body;
+    
+    if (!username || !password) {
+      return c.json({ error: 'Username and password required' }, 400);
+    }
+
+    const { rows } = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
+    if (rows.length === 0) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    const admin = rows[0];
+    const valid = await bcrypt.compare(password, admin.password_hash);
+    if (!valid) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    const token = jwt.sign(
+      { username: admin.username, admin_id: admin.id }, 
+      process.env.SECRET_KEY, 
+      { expiresIn: '2h' }
+    );
+    
+    return c.json({ token, username: admin.username });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    return c.json({ error: 'Server error during login' }, 500);
+  }
 });
 
 app.get('/', (c) => c.text('Student Portal Backend is running!'));
