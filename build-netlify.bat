@@ -16,4 +16,8 @@ echo Copying utils directory...
 if not exist netlify\functions\utils mkdir netlify\functions\utils
 xcopy /E /Y utils\* netlify\functions\utils\
 
+REM Copy SQL files for database initialization
+echo Copying SQL files...
+copy create_*.sql netlify\functions\
+
 echo Setup complete!

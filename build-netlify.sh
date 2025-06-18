@@ -20,4 +20,8 @@ echo "Copying utils directory..."
 mkdir -p netlify/functions/utils
 cp -r utils/* netlify/functions/utils/
 
+# Copy SQL files for database initialization
+echo "Copying SQL files..."
+cp create_*.sql netlify/functions/
+
 echo "Setup complete!"

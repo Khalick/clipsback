@@ -6,10 +6,10 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { pool, sql } from '../../db.js';
+import { pool, sql } from './db.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { initializeTables } from '../../utils/initDb.js';
+import { initializeTables } from './utils/initDb.js';
 
 // Get the directory name
 const __filename = fileURLToPath(import.meta.url);
