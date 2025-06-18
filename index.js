@@ -6,6 +6,8 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 import { initializeTables } from './utils/initDb.js';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import fs from 'fs';
 
 const app = new Hono();
@@ -39,8 +41,19 @@ app.use('*', async (c, next) => {
   }
 });
 
+// Get the current file's directory path
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
 // Serve static files from the public directory
-app.use('/*', serveStatic({ root: './public' }));
+app.use('/*', serveStatic({ 
+  root: join(__dirname, 'public'),
+  rewriteRequestPath: (path) => {
+    // If path is '/', serve index.html
+    if (path === '/') return '/index.html';
+    return path;
+  }
+}));
 
 // Log every request
 app.use('*', async (c, next) => {
@@ -73,18 +86,25 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 
 // Root route to show API status
 app.get('/', async (c) => {
-  // If HTML is requested, serve the status page
-  if (c.req.header('accept')?.includes('text/html')) {
-    return c.html(await fs.promises.readFile('./public/index.html', 'utf-8'));
+  try {
+    // If HTML is requested, serve the status page
+    if (c.req.header('accept')?.includes('text/html')) {
+      const htmlPath = join(__dirname, 'public', 'index.html');
+      const html = await fs.promises.readFile(htmlPath, 'utf-8');
+      return c.html(html);
+    }
+    
+    // Otherwise return a JSON status
+    return c.json({
+      status: 'running',
+      environment: process.env.NODE_ENV || 'development',
+      timestamp: new Date().toISOString(),
+      api: 'Clips College Student Portal Backend API'
+    });
+  } catch (err) {
+    console.error('Error serving index.html:', err);
+    return c.text('Error serving index.html: ' + err.message, 500);
   }
-  
-  // Otherwise return a JSON status
-  return c.json({
-    status: 'running',
-    environment: process.env.NODE_ENV || 'development',
-    timestamp: new Date().toISOString(),
-    api: 'Clips College Student Portal Backend API'
-  });
 });
 
 // Get all students
