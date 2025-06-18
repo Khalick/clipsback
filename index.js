@@ -199,7 +199,7 @@ app.put('/timetables/:id', async (c) => {
   return c.json(rows[0]);
 });
 app.delete('/timetables/:id', async (c) => {
-  const id, c.req.param('id');
+  const id = c.req.param('id');
   await pool.query('DELETE FROM timetables WHERE id = $1', [id]);
   return c.json({ message: 'Timetable deleted' });
 });
@@ -455,3 +455,6 @@ serve({
   fetch: app.fetch,
   port: port
 });
+
+// Export the app for use in api/index.js
+export { app };
