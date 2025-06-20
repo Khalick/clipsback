@@ -38,15 +38,18 @@ async function runMigrations() {
         
         const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
         
-        // Run the migration in a transaction
-        await pool.query('BEGIN');
         try {
-          await pool.query(sql);
-          await pool.query('INSERT INTO migrations (name) VALUES ($1)', [file]);
-          await pool.query('COMMIT');
+          // Import the sql client directly for transaction support
+          const { sql } = await import('./db.js');
+          
+          // Use the proper transaction method from postgres library
+          await sql.begin(async sqlTx => {
+            await sqlTx.unsafe(sql);
+            await sqlTx.unsafe('INSERT INTO migrations (name) VALUES ($1)', [file]);
+          });
+          
           console.log(`Migration ${file} applied successfully`);
         } catch (error) {
-          await pool.query('ROLLBACK');
           console.error(`Error applying migration ${file}:`, error);
           throw error;
         }

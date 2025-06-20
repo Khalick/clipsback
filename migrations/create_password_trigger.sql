@@ -7,9 +7,7 @@ CREATE FUNCTION set_default_student_password()
 RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.password IS NULL THEN
-    IF NEW.date_of_birth IS NOT NULL AND 
-       (EXTRACT(YEAR FROM AGE(CURRENT_DATE, NEW.date_of_birth)) >= 18) AND
-       NEW.national_id IS NOT NULL THEN
+    IF NEW.national_id IS NOT NULL THEN
       NEW.password := NEW.national_id;
     ELSIF NEW.birth_certificate IS NOT NULL THEN
       NEW.password := NEW.birth_certificate;
