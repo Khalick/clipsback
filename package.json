@@ -6,9 +6,10 @@
   "scripts": {
     "start": "node index.js",
     "build": "echo 'Vercel deployment ready'",
-    "init-db": "node initDb.js",
+    "init-db": "node initializeDatabase.js",
     "create-admin": "node utils/createAdminUser.js",
-    "migrate": "node run-migrations.js"
+    "migrate": "node run-migrations.js",
+    "dev": "node --watch index.js"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
@@ -19,8 +20,10 @@
     "dotenv": "^16.5.0",
     "hono": "^4.7.11",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.16.0",
+    "pg": "^8.16.1",
     "postgres": "^3.4.7",
-    "serverless-http": "^3.2.0"
+    "serverless-http": "^3.2.0",
+    "sqlite3": "^5.1.7",
+    "better-sqlite3": "^9.4.3"
   }
 }

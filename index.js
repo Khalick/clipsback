@@ -5,6 +5,7 @@ import { serve } from '@hono/node-server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
+import { serveStatic } from '@hono/node-server/serve-static';
 
 const app = new Hono();
 
@@ -397,6 +398,18 @@ app.get('/fees', async (c) => {
   }
 });
 
+app.get('/students/:id/fees', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM fees WHERE student_id = $1', [studentId]);
+    if (rows.length === 0) return c.json({ error: 'No fee records found for this student' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching student fees:', error);
+    return c.json({ error: 'Failed to fetch student fees', details: error.message }, 500);
+  }
+});
+
 app.get('/fees/:id', async (c) => {
   try {
     const id = c.req.param('id');
@@ -454,143 +467,333 @@ app.delete('/fees/:id', async (c) => {
 
 // TIMETABLES CRUD
 app.get('/timetables', async (c) => {
-  const { rows } = await pool.query('SELECT * FROM timetables');
-  return c.json(rows);
+  try {
+    const { rows } = await pool.query('SELECT * FROM timetables');
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching timetables:', error);
+    return c.json({ error: 'Failed to fetch timetables', details: error.message }, 500);
+  }
 });
+
+app.get('/students/:id/timetables', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM timetables WHERE student_id = $1', [studentId]);
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching student timetables:', error);
+    return c.json({ error: 'Failed to fetch student timetables', details: error.message }, 500);
+  }
+});
+
 app.get('/timetables/:id', async (c) => {
-  const id = c.req.param('id');
-  const { rows } = await pool.query('SELECT * FROM timetables WHERE id = $1', [id]);
-  if (rows.length === 0) return c.json({ error: 'Timetable not found' }, 404);
-  return c.json(rows[0]);
+  try {
+    const id = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM timetables WHERE id = $1', [id]);
+    if (rows.length === 0) return c.json({ error: 'Timetable not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching timetable:', error);
+    return c.json({ error: 'Failed to fetch timetable', details: error.message }, 500);
+  }
 });
+
 app.post('/timetables', async (c) => {
-  const data = await c.req.json();
-  const { student_id, semester, timetable_data } = data;
-  const { rows } = await pool.query(
-    'INSERT INTO timetables (student_id, semester, timetable_data) VALUES ($1, $2, $3) RETURNING *',
-    [student_id, semester, timetable_data]
-  );
-  return c.json(rows[0]);
+  try {
+    const data = await c.req.json();
+    const { student_id, semester, timetable_data } = data;
+    const { rows } = await pool.query(
+      'INSERT INTO timetables (student_id, semester, timetable_data) VALUES ($1, $2, $3) RETURNING *',
+      [student_id, semester, timetable_data]
+    );
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error creating timetable:', error);
+    return c.json({ error: 'Failed to create timetable', details: error.message }, 500);
+  }
 });
+
 app.put('/timetables/:id', async (c) => {
-  const id = c.req.param('id');
-  const data = await c.req.json();
-  const { student_id, semester, timetable_data } = data;
-  const { rows } = await pool.query(
-    'UPDATE timetables SET student_id=$1, semester=$2, timetable_data=$3 WHERE id=$4 RETURNING *',
-    [student_id, semester, timetable_data, id]
-  );
-  if (rows.length === 0) return c.json({ error: 'Timetable not found' }, 404);
-  return c.json(rows[0]);
+  try {
+    const id = c.req.param('id');
+    const data = await c.req.json();
+    const { student_id, semester, timetable_data } = data;
+    const { rows } = await pool.query(
+      'UPDATE timetables SET student_id=$1, semester=$2, timetable_data=$3 WHERE id=$4 RETURNING *',
+      [student_id, semester, timetable_data, id]
+    );
+    if (rows.length === 0) return c.json({ error: 'Timetable not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error updating timetable:', error);
+    return c.json({ error: 'Failed to update timetable', details: error.message }, 500);
+  }
 });
+
 app.delete('/timetables/:id', async (c) => {
-  const id = c.req.param('id');
-  await pool.query('DELETE FROM timetables WHERE id = $1', [id]);
-  return c.json({ message: 'Timetable deleted' });
+  try {
+    const id = c.req.param('id');
+    await pool.query('DELETE FROM timetables WHERE id = $1', [id]);
+    return c.json({ message: 'Timetable deleted' });
+  } catch (error) {
+    console.error('Error deleting timetable:', error);
+    return c.json({ error: 'Failed to delete timetable', details: error.message }, 500);
+  }
 });
 
 // FINANCE CRUD
 app.get('/finance', async (c) => {
-  const { rows } = await pool.query('SELECT * FROM finance');
-  return c.json(rows);
+  try {
+    const { rows } = await pool.query('SELECT * FROM finance');
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching finance records:', error);
+    return c.json({ error: 'Failed to fetch finance records', details: error.message }, 500);
+  }
 });
+
+app.get('/students/:id/finance', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM finance WHERE student_id = $1 ORDER BY created_at DESC', [studentId]);
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching student finance records:', error);
+    return c.json({ error: 'Failed to fetch student finance records', details: error.message }, 500);
+  }
+});
+
 app.get('/finance/:id', async (c) => {
-  const id = c.req.param('id');
-  const { rows } = await pool.query('SELECT * FROM finance WHERE id = $1', [id]);
-  if (rows.length === 0) return c.json({ error: 'Finance not found' }, 404);
-  return c.json(rows[0]);
+  try {
+    const id = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM finance WHERE id = $1', [id]);
+    if (rows.length === 0) return c.json({ error: 'Finance record not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching finance record:', error);
+    return c.json({ error: 'Failed to fetch finance record', details: error.message }, 500);
+  }
 });
+
 app.post('/finance', async (c) => {
-  const data = await c.req.json();
-  const { student_id, statement, receipt_url } = data;
-  const { rows } = await pool.query(
-    'INSERT INTO finance (student_id, statement, receipt_url) VALUES ($1, $2, $3) RETURNING *',
-    [student_id, statement, receipt_url]
-  );
-  return c.json(rows[0]);
+  try {
+    const data = await c.req.json();
+    const { student_id, statement, statement_url, receipt_url } = data;
+    const { rows } = await pool.query(
+      'INSERT INTO finance (student_id, statement, statement_url, receipt_url) VALUES ($1, $2, $3, $4) RETURNING *',
+      [student_id, statement, statement_url, receipt_url]
+    );
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error creating finance record:', error);
+    return c.json({ error: 'Failed to create finance record', details: error.message }, 500);
+  }
 });
+
 app.put('/finance/:id', async (c) => {
-  const id = c.req.param('id');
-  const data = await c.req.json();
-  const { student_id, statement, receipt_url } = data;
-  const { rows } = await pool.query(
-    'UPDATE finance SET student_id=$1, statement=$2, receipt_url=$3 WHERE id=$4 RETURNING *',
-    [student_id, statement, receipt_url, id]
-  );
-  if (rows.length === 0) return c.json({ error: 'Finance not found' }, 404);
-  return c.json(rows[0]);
+  try {
+    const id = c.req.param('id');
+    const data = await c.req.json();
+    const { student_id, statement, statement_url, receipt_url } = data;
+    const { rows } = await pool.query(
+      'UPDATE finance SET student_id=$1, statement=$2, statement_url=$3, receipt_url=$4 WHERE id=$5 RETURNING *',
+      [student_id, statement, statement_url, receipt_url, id]
+    );
+    if (rows.length === 0) return c.json({ error: 'Finance record not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error updating finance record:', error);
+    return c.json({ error: 'Failed to update finance record', details: error.message }, 500);
+  }
 });
+
 app.delete('/finance/:id', async (c) => {
-  const id = c.req.param('id');
-  await pool.query('DELETE FROM finance WHERE id = $1', [id]);
-  return c.json({ message: 'Finance deleted' });
+  try {
+    const id = c.req.param('id');
+    await pool.query('DELETE FROM finance WHERE id = $1', [id]);
+    return c.json({ message: 'Finance record deleted' });
+  } catch (error) {
+    console.error('Error deleting finance record:', error);
+    return c.json({ error: 'Failed to delete finance record', details: error.message }, 500);
+  }
 });
 
 // RESULTS CRUD
 app.get('/results', async (c) => {
-  const { rows } = await pool.query('SELECT * FROM results');
-  return c.json(rows);
+  try {
+    const { rows } = await pool.query('SELECT * FROM results');
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching results:', error);
+    return c.json({ error: 'Failed to fetch results', details: error.message }, 500);
+  }
 });
+
+app.get('/students/:id/results', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM results WHERE student_id = $1 ORDER BY semester', [studentId]);
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching student results:', error);
+    return c.json({ error: 'Failed to fetch student results', details: error.message }, 500);
+  }
+});
+
 app.get('/results/:id', async (c) => {
-  const id = c.req.param('id');
-  const { rows } = await pool.query('SELECT * FROM results WHERE id = $1', [id]);
-  if (rows.length === 0) return c.json({ error: 'Result not found' }, 404);
-  return c.json(rows[0]);
+  try {
+    const id = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM results WHERE id = $1', [id]);
+    if (rows.length === 0) return c.json({ error: 'Result not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching result:', error);
+    return c.json({ error: 'Failed to fetch result', details: error.message }, 500);
+  }
 });
+
 app.post('/results', async (c) => {
-  const data = await c.req.json();
-  const { student_id, semester, result_data } = data;
-  const { rows } = await pool.query(
-    'INSERT INTO results (student_id, semester, result_data) VALUES ($1, $2, $3) RETURNING *',
-    [student_id, semester, result_data]
-  );
-  return c.json(rows[0]);
+  try {
+    const data = await c.req.json();
+    const { student_id, semester, result_data } = data;
+    const { rows } = await pool.query(
+      'INSERT INTO results (student_id, semester, result_data) VALUES ($1, $2, $3) RETURNING *',
+      [student_id, semester, result_data]
+    );
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error creating result:', error);
+    return c.json({ error: 'Failed to create result', details: error.message }, 500);
+  }
 });
+
 app.put('/results/:id', async (c) => {
-  const id = c.req.param('id');
-  const data = await c.req.json();
-  const { student_id, semester, result_data } = data;
-  const { rows } = await pool.query(
-    'UPDATE results SET student_id=$1, semester=$2, result_data=$3 WHERE id=$4 RETURNING *',
-    [student_id, semester, result_data, id]
-  );
-  if (rows.length === 0) return c.json({ error: 'Result not found' }, 404);
-  return c.json(rows[0]);
+  try {
+    const id = c.req.param('id');
+    const data = await c.req.json();
+    const { student_id, semester, result_data } = data;
+    const { rows } = await pool.query(
+      'UPDATE results SET student_id=$1, semester=$2, result_data=$3 WHERE id=$4 RETURNING *',
+      [student_id, semester, result_data, id]
+    );
+    if (rows.length === 0) return c.json({ error: 'Result not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error updating result:', error);
+    return c.json({ error: 'Failed to update result', details: error.message }, 500);
+  }
 });
+
 app.delete('/results/:id', async (c) => {
-  const id = c.req.param('id');
-  await pool.query('DELETE FROM results WHERE id = $1', [id]);
-  return c.json({ message: 'Result deleted' });
+  try {
+    const id = c.req.param('id');
+    await pool.query('DELETE FROM results WHERE id = $1', [id]);
+    return c.json({ message: 'Result deleted' });
+  } catch (error) {
+    console.error('Error deleting result:', error);
+    return c.json({ error: 'Failed to delete result', details: error.message }, 500);
+  }
 });
 
 // UNITS CRUD
 app.get('/units', async (c) => {
-  const { rows } = await pool.query('SELECT * FROM units');
-  return c.json(rows);
+  try {
+    const { rows } = await pool.query('SELECT * FROM units');
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching units:', error);
+    return c.json({ error: 'Failed to fetch units', details: error.message }, 500);
+  }
 });
+
+app.get('/units/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM units WHERE id = $1', [id]);
+    if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching unit:', error);
+    return c.json({ error: 'Failed to fetch unit', details: error.message }, 500);
+  }
+});
+
 app.post('/units', async (c) => {
-  const { unit_name, unit_code } = await c.req.json();
-  const { rows } = await pool.query(
-    'INSERT INTO units (unit_name, unit_code) VALUES ($1, $2) RETURNING *',
-    [unit_name, unit_code]
-  );
-  return c.json(rows[0]);
+  try {
+    const { unit_name, unit_code } = await c.req.json();
+    const { rows } = await pool.query(
+      'INSERT INTO units (unit_name, unit_code) VALUES ($1, $2) RETURNING *',
+      [unit_name, unit_code]
+    );
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error creating unit:', error);
+    return c.json({ error: 'Failed to create unit', details: error.message }, 500);
+  }
+});
+
+app.put('/units/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { unit_name, unit_code } = await c.req.json();
+    const { rows } = await pool.query(
+      'UPDATE units SET unit_name=$1, unit_code=$2 WHERE id=$3 RETURNING *',
+      [unit_name, unit_code, id]
+    );
+    if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error updating unit:', error);
+    return c.json({ error: 'Failed to update unit', details: error.message }, 500);
+  }
+});
+
+app.delete('/units/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    await pool.query('DELETE FROM units WHERE id = $1', [id]);
+    return c.json({ message: 'Unit deleted' });
+  } catch (error) {
+    console.error('Error deleting unit:', error);
+    return c.json({ error: 'Failed to delete unit', details: error.message }, 500);
+  }
+});
+
+// Get units registered by a student
+app.get('/students/:id/registered-units', async (c) => {
+  try {
+    const student_id = c.req.param('id');
+    const { rows } = await pool.query(
+      'SELECT * FROM registered_units WHERE student_id = $1',
+      [student_id]
+    );
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching registered units for student:', error);
+    return c.json({ error: 'Failed to fetch registered units', details: error.message }, 500);
+  }
 });
 
 // Register a unit for a student (student registers a unit)
 app.post('/students/:id/register-unit', async (c) => {
-  const student_id = c.req.param('id');
-  const { unit_id } = await c.req.json();
-  // Get unit details
-  const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [unit_id]);
-  if (unitRes.rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
-  const unit = unitRes.rows[0];
-  // Register the unit for the student
-  const { rows } = await pool.query(
-    'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
-    [student_id, unit.unit_name, unit.unit_code, 'registered']
-  );
-  return c.json(rows[0]);
+  try {
+    const student_id = c.req.param('id');
+    const { unit_id } = await c.req.json();
+    // Get unit details
+    const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [unit_id]);
+    if (unitRes.rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
+    const unit = unitRes.rows[0];
+    // Register the unit for the student
+    const { rows } = await pool.query(
+      'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
+      [student_id, unit.unit_name, unit.unit_code, 'registered']
+    );
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error registering unit for student:', error);
+    return c.json({ error: 'Failed to register unit', details: error.message }, 500);
+  }
 });
 
 // Admin login - SIMPLIFIED without separate OPTIONS handler
@@ -632,15 +835,18 @@ app.post('/auth/admin-login', async (c) => {
   }
 });
 
-// Simple health check endpoint
-app.get('/', async (c) => {
+// Serve static files from the public directory
+app.use('/*', serveStatic({ root: './public' }));
+
+// API health check endpoint
+app.get('/api/health', async (c) => {
   try {
     // Test database connection
     await pool.query('SELECT 1');
-    return c.text('Student Portal Backend is running! Database connection is healthy.');
+    return c.json({ status: 'ok', message: 'Student Portal Backend is running! Database connection is healthy.' });
   } catch (error) {
     console.error('Health check failed:', error);
-    return c.text('Student Portal Backend is running, but database connection failed!', 500);
+    return c.json({ status: 'error', message: 'Database connection failed!' }, 500);
   }
 });
 
@@ -711,40 +917,79 @@ app.post('/auth/student-login', async (c) => {
 
 // Exam Card Endpoints
 app.get('/students/:id/exam-card', async (c) => {
-  const studentId = c.req.param('id');
-  // Check fee status
-  const { rows: feeRows } = await pool.query(
-    'SELECT fee_balance FROM fees WHERE student_id = $1',
-    [studentId]
-  );
-  if (feeRows.length === 0) return c.json({ error: 'No fee record found' }, 404);
-  if (parseFloat(feeRows[0].fee_balance) > 0) {
-    return c.json({ error: 'Please complete your fee payment to download your exam card.' }, 403);
+  try {
+    const studentId = c.req.param('id');
+    // Check fee status
+    const { rows: feeRows } = await pool.query(
+      'SELECT fee_balance FROM fees WHERE student_id = $1',
+      [studentId]
+    );
+    if (feeRows.length === 0) return c.json({ error: 'No fee record found' }, 404);
+    if (parseFloat(feeRows[0].fee_balance) > 0) {
+      return c.json({ error: 'Please complete your fee payment to download your exam card.' }, 403);
+    }
+    // Get exam card file URL
+    const { rows: cardRows } = await pool.query(
+      'SELECT file_url FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [studentId]
+    );
+    if (cardRows.length === 0) return c.json({ error: 'No exam card found' }, 404);
+    return c.json({ file_url: cardRows[0].file_url });
+  } catch (error) {
+    console.error('Error fetching exam card:', error);
+    return c.json({ error: 'Failed to fetch exam card', details: error.message }, 500);
   }
-  // Get exam card file URL
-  const { rows: cardRows } = await pool.query(
-    'SELECT file_url FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
-    [studentId]
-  );
-  if (cardRows.length === 0) return c.json({ error: 'No exam card found' }, 404);
-  return c.json({ file_url: cardRows[0].file_url });
+});
+
+app.get('/exam-cards', async (c) => {
+  try {
+    const { rows } = await pool.query('SELECT * FROM exam_cards');
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching exam cards:', error);
+    return c.json({ error: 'Failed to fetch exam cards', details: error.message }, 500);
+  }
 });
 
 app.post('/students/:id/exam-card', async (c) => {
-  const studentId = c.req.param('id');
-  const { file_url } = await c.req.json();
-  await pool.query(
-    'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
-    [studentId, file_url]
-  );
-  return c.json({ message: 'Exam card uploaded.' });
+  try {
+    const studentId = c.req.param('id');
+    const { file_url } = await c.req.json();
+    await pool.query(
+      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
+      [studentId, file_url]
+    );
+    return c.json({ message: 'Exam card uploaded.' });
+  } catch (error) {
+    console.error('Error uploading exam card:', error);
+    return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
+  }
+});
+
+// Upload exam card with file upload (admin)
+app.post('/students/:id/upload-exam-card', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    const formData = await c.req.parseBody();
+    const file = formData['file'];
+    if (!file) return c.json({ error: 'No file uploaded' }, 400);
+    const fileName = `exam-cards/${studentId}_${Date.now()}_${file.name}`;
+    const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
+    if (error) return c.json({ error: error.message }, 500);
+    const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
+    await pool.query('INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)', [studentId, publicURL]);
+    return c.json({ message: 'Exam card uploaded.', url: publicURL });
+  } catch (error) {
+    console.error('Error uploading exam card:', error);
+    return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
+  }
 });
 
 // Fee Statement and Receipt Endpoints
 app.get('/students/:id/fee-statement', async (c) => {
   const studentId = c.req.param('id');
   const { rows } = await pool.query(
-    'SELECT statement_url FROM finance WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+    'SELECT statement_url FROM finance WHERE student_id = $1 AND statement_url IS NOT NULL ORDER BY created_at DESC LIMIT 1',
     [studentId]
   );
   if (rows.length === 0) return c.json({ error: 'No fee statement found' }, 404);
@@ -754,7 +999,7 @@ app.get('/students/:id/fee-statement', async (c) => {
 app.get('/students/:id/fee-receipt', async (c) => {
   const studentId = c.req.param('id');
   const { rows } = await pool.query(
-    'SELECT receipt_url FROM finance WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+    'SELECT receipt_url FROM finance WHERE student_id = $1 AND receipt_url IS NOT NULL ORDER BY created_at DESC LIMIT 1',
     [studentId]
   );
   if (rows.length === 0) return c.json({ error: 'No fee receipt found' }, 404);
@@ -765,7 +1010,7 @@ app.post('/students/:id/fee-statement', async (c) => {
   const studentId = c.req.param('id');
   const { statement_url } = await c.req.json();
   await pool.query(
-    'INSERT INTO finance (student_id, statement) VALUES ($1, $2)',
+    'INSERT INTO finance (student_id, statement_url) VALUES ($1, $2)',
     [studentId, statement_url]
   );
   return c.json({ message: 'Fee statement uploaded.' });
@@ -783,30 +1028,40 @@ app.post('/students/:id/fee-receipt', async (c) => {
 
 // Upload fee statement (admin)
 app.post('/students/:id/upload-fee-statement', async (c) => {
-  const studentId = c.req.param('id');
-  const formData = await c.req.parseBody();
-  const file = formData['file'];
-  if (!file) return c.json({ error: 'No file uploaded' }, 400);
-  const fileName = `fee-statements/${studentId}_${Date.now()}_${file.name}`;
-  const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
-  if (error) return c.json({ error: error.message }, 500);
-  const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
-  await pool.query('INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', [studentId, fileName, publicURL]);
-  return c.json({ message: 'Fee statement uploaded.', url: publicURL });
+  try {
+    const studentId = c.req.param('id');
+    const formData = await c.req.parseBody();
+    const file = formData['file'];
+    if (!file) return c.json({ error: 'No file uploaded' }, 400);
+    const fileName = `fee-statements/${studentId}_${Date.now()}_${file.name}`;
+    const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
+    if (error) return c.json({ error: error.message }, 500);
+    const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
+    await pool.query('INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', [studentId, fileName, publicURL]);
+    return c.json({ message: 'Fee statement uploaded.', url: publicURL });
+  } catch (error) {
+    console.error('Error uploading fee statement:', error);
+    return c.json({ error: 'Failed to upload fee statement', details: error.message }, 500);
+  }
 });
 
 // Upload fee receipt (admin)
 app.post('/students/:id/upload-fee-receipt', async (c) => {
-  const studentId = c.req.param('id');
-  const formData = await c.req.parseBody();
-  const file = formData['file'];
-  if (!file) return c.json({ error: 'No file uploaded' }, 400);
-  const fileName = `fee-receipts/${studentId}_${Date.now()}_${file.name}`;
-  const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
-  if (error) return c.json({ error: error.message }, 500);
-  const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
-  await pool.query('INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', [studentId, publicURL]);
-  return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
+  try {
+    const studentId = c.req.param('id');
+    const formData = await c.req.parseBody();
+    const file = formData['file'];
+    if (!file) return c.json({ error: 'No file uploaded' }, 400);
+    const fileName = `fee-receipts/${studentId}_${Date.now()}_${file.name}`;
+    const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
+    if (error) return c.json({ error: error.message }, 500);
+    const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
+    await pool.query('INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', [studentId, publicURL]);
+    return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
+  } catch (error) {
+    console.error('Error uploading fee receipt:', error);
+    return c.json({ error: 'Failed to upload fee receipt', details: error.message }, 500);
+  }
 });
 
 const port = process.env.PORT || 3000;

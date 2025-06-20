@@ -28,6 +28,7 @@ CREATE TABLE public.finance (
   id uuid NOT NULL DEFAULT gen_random_uuid(),
   student_id uuid,
   statement text,
+  statement_url text,
   receipt_url text,
   created_at timestamp with time zone DEFAULT now(),
   CONSTRAINT finance_pkey PRIMARY KEY (id),
@@ -71,4 +72,10 @@ CREATE TABLE public.timetables (
   timetable_data jsonb NOT NULL,
   CONSTRAINT timetables_pkey PRIMARY KEY (id),
   CONSTRAINT timetables_student_id_fkey FOREIGN KEY (student_id) REFERENCES public.students(id)
+);
+CREATE TABLE public.units (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  unit_name character varying NOT NULL,
+  unit_code character varying NOT NULL UNIQUE,
+  CONSTRAINT units_pkey PRIMARY KEY (id)
 );

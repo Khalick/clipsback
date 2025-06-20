@@ -2,9 +2,15 @@ import postgres from 'postgres';
 import dotenv from 'dotenv';
 dotenv.config();
 
-// Create a postgres client using the postgres package
+// Create a postgres client using the postgres package with improved connection options
 export const sql = postgres(process.env.DATABASE_URL, {
-  ssl: { rejectUnauthorized: false } // Set to false to accept self-signed certificates
+  ssl: false, // Disable SSL for local connections
+  max: 10, // Maximum number of connections
+  idle_timeout: 30, // Close idle connections after 30 seconds
+  connect_timeout: 10, // Connection timeout in seconds
+  connection: {
+    application_name: 'student-portal' // Application name for connection
+  }
 });
 
 // Export a wrapper to maintain compatibility with existing code that uses pool.query
