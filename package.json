@@ -22,8 +22,6 @@
     "jsonwebtoken": "^9.0.2",
     "pg": "^8.16.1",
     "postgres": "^3.4.7",
-    "serverless-http": "^3.2.0",
-    "sqlite3": "^5.1.7",
-    "better-sqlite3": "^9.4.3"
+    "serverless-http": "^3.2.0"
   }
 }
