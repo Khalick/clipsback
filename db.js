@@ -4,7 +4,7 @@ dotenv.config();
 
 // Create a postgres client using the postgres package with improved connection options
 export const sql = postgres(process.env.DATABASE_URL, {
-  ssl: false, // Disable SSL for local connections
+  ssl: { rejectUnauthorized: false }, // Accept self-signed certificates
   max: 10, // Maximum number of connections
   idle_timeout: 30, // Close idle connections after 30 seconds
   connect_timeout: 10, // Connection timeout in seconds

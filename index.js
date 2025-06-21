@@ -51,7 +51,17 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Get all students
 app.get('/students', async (c) => {
   try {
-    const { rows } = await pool.query('SELECT * FROM students');
+    const status = c.req.query('status');
+    let query = 'SELECT * FROM students';
+    let params = [];
+    
+    // If status query parameter is provided, filter by status
+    if (status) {
+      query += ' WHERE status = $1';
+      params.push(status);
+    }
+    
+    const { rows } = await pool.query(query, params);
     return c.json(rows);
   } catch (error) {
     console.error('Error fetching students:', error);
@@ -59,6 +69,21 @@ app.get('/students', async (c) => {
       error: 'Failed to fetch students', 
       details: error.message 
     }, 500);
+  }
+});
+
+// Get students by status
+app.get('/students/status/:statusType', async (c) => {
+  try {
+    const statusType = c.req.param('statusType'); // 'active', 'deregistered', or 'on_leave'
+    const { rows } = await pool.query(
+      'SELECT * FROM students WHERE status = $1',
+      [statusType]
+    );
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching students by status:', error);
+    return c.json({ error: 'Failed to fetch students', details: error.message }, 500);
   }
 });
 
@@ -261,7 +286,8 @@ app.post('/students/registration/:regNumber/deregister', async (c) => {
       `UPDATE students SET 
         deregistered=true, 
         deregistration_date=$1, 
-        deregistration_reason=$2 
+        deregistration_reason=$2,
+        status='deregistered' 
       WHERE registration_number=$3 RETURNING *`,
       [today, reason, registration_number]
     );
@@ -303,7 +329,8 @@ app.post('/students/deregister', async (c) => {
         `UPDATE students SET 
           deregistered=true, 
           deregistration_date=$1, 
-          deregistration_reason=$2 
+          deregistration_reason=$2,
+          status='deregistered' 
         WHERE id = ANY($3) RETURNING *`,
         [today, reason, body.student_ids]
       );
@@ -315,7 +342,8 @@ app.post('/students/deregister', async (c) => {
         `UPDATE students SET 
           deregistered=true, 
           deregistration_date=$1, 
-          deregistration_reason=$2 
+          deregistration_reason=$2,
+          status='deregistered' 
         WHERE registration_number = ANY($3) RETURNING *`,
         [today, reason, body.registration_numbers]
       );
@@ -356,7 +384,8 @@ app.post('/students/:id/deregister', async (c) => {
       `UPDATE students SET 
         deregistered=true, 
         deregistration_date=$1, 
-        deregistration_reason=$2 
+        deregistration_reason=$2,
+        status='deregistered' 
       WHERE id=$3 RETURNING *`,
       [today, reason, student_id]
     );
@@ -385,7 +414,8 @@ app.post('/students/:id/restore', async (c) => {
       `UPDATE students SET 
         deregistered=false, 
         deregistration_date=NULL, 
-        deregistration_reason=NULL 
+        deregistration_reason=NULL,
+        status='active' 
       WHERE id=$1 RETURNING *`,
       [student_id]
     );
@@ -415,7 +445,8 @@ app.delete('/students/:id/academic-leave', async (c) => {
         academic_leave=false, 
         academic_leave_start=NULL, 
         academic_leave_end=NULL,
-        academic_leave_reason=NULL 
+        academic_leave_reason=NULL,
+        status='active' 
       WHERE id=$1 RETURNING *`,
       [student_id]
     );
@@ -455,7 +486,8 @@ app.post('/students/:id/deregister', async (c) => {
       `UPDATE students SET 
         deregistered=true, 
         deregistration_date=$1, 
-        deregistration_reason=$2 
+        deregistration_reason=$2,
+        status='deregistered' 
       WHERE id=$3 RETURNING *`,
       [today, reason, student_id]
     );
@@ -495,7 +527,8 @@ app.post('/students/registration/:regNumber/deregister', async (c) => {
       `UPDATE students SET 
         deregistered=true, 
         deregistration_date=$1, 
-        deregistration_reason=$2 
+        deregistration_reason=$2,
+        status='deregistered' 
       WHERE registration_number=$3 RETURNING *`,
       [today, reason, registration_number]
     );
@@ -537,7 +570,8 @@ app.post('/students/deregister', async (c) => {
         `UPDATE students SET 
           deregistered=true, 
           deregistration_date=$1, 
-          deregistration_reason=$2 
+          deregistration_reason=$2,
+          status='deregistered' 
         WHERE id = ANY($3) RETURNING *`,
         [today, reason, body.student_ids]
       );
@@ -549,7 +583,8 @@ app.post('/students/deregister', async (c) => {
         `UPDATE students SET 
           deregistered=true, 
           deregistration_date=$1, 
-          deregistration_reason=$2 
+          deregistration_reason=$2,
+          status='deregistered' 
         WHERE registration_number = ANY($3) RETURNING *`,
         [today, reason, body.registration_numbers]
       );
@@ -579,7 +614,8 @@ app.post('/students/:id/restore', async (c) => {
       `UPDATE students SET 
         deregistered=false, 
         deregistration_date=NULL, 
-        deregistration_reason=NULL 
+        deregistration_reason=NULL,
+        status='active' 
       WHERE id=$1 RETURNING *`,
       [student_id]
     );

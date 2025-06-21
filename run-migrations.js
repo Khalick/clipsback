@@ -36,15 +36,64 @@ async function runMigrations() {
       if (!appliedMigrationNames.includes(file)) {
         console.log(`Running migration: ${file}`);
         
-        const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+        const sqlContent = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
         
         try {
           // Import the sql client directly for transaction support
-          const { sql } = await import('./db.js');
+          const { sql: sqlClient } = await import('./db.js');
           
-          // Use the proper transaction method from postgres library
-          await sql.begin(async sqlTx => {
-            await sqlTx.unsafe(sql);
+          // Split the SQL file by semicolons to execute statements individually
+          // but preserve function and trigger definitions that contain semicolons
+          let statements = [];
+          let currentStatement = '';
+          let inFunction = false;
+          
+          // Simple parsing to handle function/procedure definitions
+          for (const line of sqlContent.split('\n')) {
+            // Check if we're entering a function/procedure definition
+            if (line.includes('CREATE FUNCTION') || line.includes('CREATE PROCEDURE') || 
+                line.includes('CREATE OR REPLACE FUNCTION') || line.includes('CREATE OR REPLACE PROCEDURE')) {
+              inFunction = true;
+            }
+            
+            currentStatement += line + '\n';
+            
+            // If we're in a function definition and see the end of it (language specifier)
+            if (inFunction && line.trim().match(/LANGUAGE\s+[a-z]+;$/i)) {
+              statements.push(currentStatement.trim());
+              currentStatement = '';
+              inFunction = false;
+              continue;
+            }
+            
+            // If we're not in a function and have a statement terminator
+            if (!inFunction && line.trim().endsWith(';')) {
+              statements.push(currentStatement.trim());
+              currentStatement = '';
+            }
+          }
+          
+          // Catch any remaining statements
+          if (currentStatement.trim()) {
+            statements.push(currentStatement.trim());
+          }
+          
+          // Filter out empty statements
+          statements = statements.filter(s => s.trim() !== '');
+          
+          // Execute each statement in a transaction
+          await sqlClient.begin(async sqlTx => {
+            for (const statement of statements) {
+              if (statement.trim()) {
+                try {
+                  await sqlTx.unsafe(statement);
+                } catch (statementError) {
+                  console.error(`Error executing statement: ${statement.substring(0, 100)}...`);
+                  throw statementError;
+                }
+              }
+            }
+            
             await sqlTx.unsafe('INSERT INTO migrations (name) VALUES ($1)', [file]);
           });
           
