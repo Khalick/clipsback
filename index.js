@@ -1586,7 +1586,7 @@ app.post('/student/auth/forgot-password', async (c) => {
     const body = await c.req.json();
     
     // Extract necessary fields from request
-    const { registration_number, national_id, birth_certificate, new_password } = body;
+    const { registration_number, new_password } = body;
     
     if (!registration_number) {
       return c.json({ error: 'Registration number is required' }, 400);
@@ -1603,22 +1603,6 @@ app.post('/student/auth/forgot-password', async (c) => {
     }
     
     const student = rows[0];
-    
-    // Verify identity using either national ID or birth certificate
-    let identityVerified = false;
-    
-    if (national_id && student.national_id === national_id) {
-      identityVerified = true;
-    } else if (birth_certificate && student.birth_certificate === birth_certificate) {
-      identityVerified = true;
-    }
-    
-    if (!identityVerified) {
-      return c.json({ 
-        error: 'Identity verification failed', 
-        details: 'Please provide a valid national ID or birth certificate number' 
-      }, 401);
-    }
     
     // Hash the new password
     const hashedPassword = await bcrypt.hash(new_password, 10);

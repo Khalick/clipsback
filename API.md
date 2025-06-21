@@ -66,13 +66,9 @@ POST /student/auth/forgot-password
 ```json
 {
   "registration_number": "STU001",
-  "national_id": "ID12345678", 
-  "birth_certificate": "BC12345678", 
   "new_password": "newpassword123"
 }
 ```
-
-Note: Either `national_id` OR `birth_certificate` is required for identity verification.
 
 **Response (Success):**
 ```json
@@ -86,14 +82,6 @@ Note: Either `national_id` OR `birth_certificate` is required for identity verif
 ```json
 {
   "error": "Registration number is required"
-}
-```
-
-**Response (Error - Identity Verification Failed):**
-```json
-{
-  "error": "Identity verification failed",
-  "details": "Please provide a valid national ID or birth certificate number"
 }
 ```
 
