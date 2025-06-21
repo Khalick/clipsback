@@ -1579,6 +1579,69 @@ app.post('/auth/student-login', async (c) => {
   }
 });
 
+// Student forgot password endpoint
+app.post('/student/auth/forgot-password', async (c) => {
+  try {
+    console.log('Student forgot password request received');
+    const body = await c.req.json();
+    
+    // Extract necessary fields from request
+    const { registration_number, national_id, birth_certificate, new_password } = body;
+    
+    if (!registration_number) {
+      return c.json({ error: 'Registration number is required' }, 400);
+    }
+    
+    if (!new_password) {
+      return c.json({ error: 'New password is required' }, 400);
+    }
+    
+    // Find the student
+    const { rows } = await pool.query('SELECT * FROM students WHERE registration_number = $1', [registration_number]);
+    if (rows.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    const student = rows[0];
+    
+    // Verify identity using either national ID or birth certificate
+    let identityVerified = false;
+    
+    if (national_id && student.national_id === national_id) {
+      identityVerified = true;
+    } else if (birth_certificate && student.birth_certificate === birth_certificate) {
+      identityVerified = true;
+    }
+    
+    if (!identityVerified) {
+      return c.json({ 
+        error: 'Identity verification failed', 
+        details: 'Please provide a valid national ID or birth certificate number' 
+      }, 401);
+    }
+    
+    // Hash the new password
+    const hashedPassword = await bcrypt.hash(new_password, 10);
+    
+    // Update the password in the database
+    await pool.query(
+      'UPDATE students SET password = $1 WHERE registration_number = $2',
+      [hashedPassword, registration_number]
+    );
+    
+    return c.json({ 
+      message: 'Password reset successful', 
+      registration_number: student.registration_number 
+    });
+  } catch (error) {
+    console.error('Error resetting student password:', error);
+    return c.json({ 
+      error: 'Failed to reset password', 
+      details: error.message 
+    }, 500);
+  }
+});
+
 // Exam Card Endpoints
 app.get('/students/:id/exam-card', async (c) => {
   try {

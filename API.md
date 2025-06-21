@@ -50,9 +50,50 @@ POST /auth/student-login
 ```json
 {
   "token": "jwt_token_here",
-  "student_id": "uuid_here",
+  "student_id": 1,
   "registration_number": "STU001",
-  "name": "John Doe"
+  "name": "Student Name"
+}
+```
+
+### Student Forgot Password
+
+```
+POST /student/auth/forgot-password
+```
+
+**Request Body:**
+```json
+{
+  "registration_number": "STU001",
+  "national_id": "ID12345678", 
+  "birth_certificate": "BC12345678", 
+  "new_password": "newpassword123"
+}
+```
+
+Note: Either `national_id` OR `birth_certificate` is required for identity verification.
+
+**Response (Success):**
+```json
+{
+  "message": "Password reset successful",
+  "registration_number": "STU001"
+}
+```
+
+**Response (Error - Missing Fields):**
+```json
+{
+  "error": "Registration number is required"
+}
+```
+
+**Response (Error - Identity Verification Failed):**
+```json
+{
+  "error": "Identity verification failed",
+  "details": "Please provide a valid national ID or birth certificate number"
 }
 ```
 

@@ -61,6 +61,7 @@ npm run dev
 ### Authentication
 - `POST /auth/admin-login` - Admin login
 - `POST /auth/student-login` - Student login
+- `POST /student/auth/forgot-password` - Student password reset
 
 ### Students
 - `GET /students` - Get all students
