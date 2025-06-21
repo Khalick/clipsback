@@ -51,6 +51,20 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 // Get all students
 app.get('/students', async (c) => {
   try {
+    console.log('Fetching students');
+    
+    // Check if database connection is available - do a simple ping
+    try {
+      await pool.query('SELECT 1');
+    } catch (dbError) {
+      console.error('Database connection error:', dbError);
+      return c.json({ 
+        error: 'Database connection failed', 
+        details: 'Unable to connect to the database. Please try again later.',
+        serverInfo: process.env.NODE_ENV === 'development' ? dbError.message : undefined
+      }, 503); // Service Unavailable
+    }
+    
     const status = c.req.query('status');
     let query = 'SELECT * FROM students';
     let params = [];
@@ -62,12 +76,14 @@ app.get('/students', async (c) => {
     }
     
     const { rows } = await pool.query(query, params);
+    console.log(`Successfully fetched ${rows.length} students`);
     return c.json(rows);
   } catch (error) {
     console.error('Error fetching students:', error);
     return c.json({ 
       error: 'Failed to fetch students', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 500);
   }
 });
@@ -1371,13 +1387,44 @@ app.use('/*', serveStatic({ root: './public' }));
 
 // API health check endpoint
 app.get('/api/health', async (c) => {
+  const health = {
+    status: 'ok',
+    uptime: process.uptime(),
+    timestamp: Date.now(),
+    environment: process.env.NODE_ENV || 'development'
+  };
+  
   try {
     // Test database connection
+    console.log('Testing database connection...');
+    const startTime = Date.now();
     await pool.query('SELECT 1');
-    return c.json({ status: 'ok', message: 'Student Portal Backend is running! Database connection is healthy.' });
+    const duration = Date.now() - startTime;
+    
+    health.database = {
+      status: 'connected',
+      responseTime: `${duration}ms`
+    };
+    
+    return c.json({ 
+      ...health,
+      message: 'Student Portal Backend is running! Database connection is healthy.' 
+    });
   } catch (error) {
     console.error('Health check failed:', error);
-    return c.json({ status: 'error', message: 'Database connection failed!' }, 500);
+    
+    health.status = 'error';
+    health.database = {
+      status: 'disconnected',
+      error: error.message,
+      code: error.code || 'UNKNOWN'
+    };
+    
+    return c.json({ 
+      ...health,
+      message: 'Database connection failed!',
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 503);
   }
 });
 

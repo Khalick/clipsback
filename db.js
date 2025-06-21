@@ -4,12 +4,22 @@ dotenv.config();
 
 // Create a postgres client using the postgres package with improved connection options
 export const sql = postgres(process.env.DATABASE_URL, {
-  ssl: { rejectUnauthorized: false }, // Accept self-signed certificates
+  ssl: { 
+    rejectUnauthorized: false // Accept self-signed certificates from Aiven
+  },
   max: 10, // Maximum number of connections
   idle_timeout: 30, // Close idle connections after 30 seconds
-  connect_timeout: 10, // Connection timeout in seconds
+  connect_timeout: 15, // Increased connection timeout for cloud environments
   connection: {
     application_name: 'student-portal' // Application name for connection
+  },
+  // Add retry logic for cloud environments
+  onnotice: () => {}, // Suppress notices
+  debug: (connection, query, params, types) => {
+    // Only log in development
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('DB Query:', query);
+    }
   }
 });
 
