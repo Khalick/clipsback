@@ -759,11 +759,25 @@ app.post('/students', async (c) => {
     // Check if the request is multipart form data
     const contentType = c.req.header('content-type') || '';
     console.log('Request content-type:', contentType);
+    console.log('Full headers:', Object.fromEntries(c.req.raw.headers.entries()));
+    
+    // Log environment info to help debugging
+    console.log('Node env:', process.env.NODE_ENV);
+    console.log('Vercel env:', process.env.VERCEL_ENV);
     
     if (contentType.includes('multipart/form-data')) {
       console.log('Detected multipart/form-data request, redirecting to photo handler');
       // Redirect to the multipart handler
-      return await handleStudentWithPhoto(c);
+      try {
+        return await handleStudentWithPhoto(c);
+      } catch (photoError) {
+        console.error('Error in photo handler:', photoError);
+        return c.json({
+          error: 'Error processing photo upload',
+          details: photoError.message,
+          stack: process.env.NODE_ENV === 'development' ? photoError.stack : undefined
+        }, 500);
+      }
     }
     
     console.log('Processing standard JSON request');
@@ -775,7 +789,8 @@ app.post('/students', async (c) => {
       console.error('Error parsing JSON:', jsonError);
       return c.json({
         error: 'Invalid JSON data',
-        details: jsonError.message
+        details: jsonError.message,
+        message: 'Make sure you are sending a valid JSON body with the correct content-type header'
       }, 400);
     }
     console.log('Received student data:', data);
@@ -867,24 +882,56 @@ app.post('/students', async (c) => {
 
 // Handle student registration with photo upload
 async function handleStudentWithPhoto(c) {
+  console.log('Handling student registration with photo');
+  
+  // Declare all variables at the beginning of the function to avoid scope issues
+  let registration_number = '';
+  let name = '';
+  let course = '';
+  let level_of_study = '';
+  let national_id = null;
+  let birth_certificate = null;
+  let date_of_birth = null;
+  let password = null;
+  let email = null;
+  let student_photo_url = null;
+  let formData = {};
+  
   try {
-    console.log('Handling student registration with photo');
+    // Log request information to help diagnose Vercel issues
+    console.log('Request method:', c.req.method);
+    console.log('Content-Type:', c.req.header('content-type'));
+    console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()));
     
     try {
-      // Parse the multipart form data
-      const formData = await c.req.parseBody();
-      console.log('Form data keys:', Object.keys(formData));
+      // Parse the multipart form data with error handling
+      console.log('Attempting to parse form data...');
+      formData = await c.req.parseBody();
+      console.log('Form data successfully parsed, keys:', Object.keys(formData));
       
-      // Extract student data
-      const registration_number = formData.registration_number || '';
-      const name = formData.name || '';
-      const course = formData.course || '';
-      const level_of_study = formData.level_of_study || '';
-      const national_id = formData.national_id || null;
-      const birth_certificate = formData.birth_certificate || null;
-      const date_of_birth = formData.date_of_birth || null;
-      const password = formData.password || null;
-      const email = formData.email || null;
+      // Extract student data with additional validation
+      registration_number = formData.registration_number || '';
+      name = formData.name || '';
+      course = formData.course || '';
+      level_of_study = formData.level_of_study || '';
+      national_id = formData.national_id || null;
+      birth_certificate = formData.birth_certificate || null;
+      date_of_birth = formData.date_of_birth || null;
+      password = formData.password || null;
+      email = formData.email || null;
+      
+      console.log('Extracted form data:', {
+        registration_number,
+        name,
+        course,
+        level_of_study,
+        national_id: national_id ? '[PRESENT]' : '[NOT PRESENT]',
+        birth_certificate: birth_certificate ? '[PRESENT]' : '[NOT PRESENT]',
+        date_of_birth,
+        email: email || '[NOT PRESENT]',
+        password: password ? '[PRESENT]' : '[NOT PRESENT]',
+        photo: formData.photo ? '[PHOTO PRESENT]' : '[NO PHOTO]'
+      });
       
       // Validate required fields
       if (!registration_number || !name || !course || !level_of_study) {
@@ -893,50 +940,60 @@ async function handleStudentWithPhoto(c) {
           details: 'Registration number, name, course, and level of study are required' 
         }, 400);
       }
+    } catch (parseError) {
+      console.error('Error parsing form data:', parseError);
+      console.error('Parse error stack:', parseError.stack);
+      return c.json({
+        error: 'Failed to process form data',
+        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
+        originalError: parseError.message,
+        stack: process.env.NODE_ENV === 'development' ? parseError.stack : undefined
+      }, 400);
+    }
+    
+    // Handle photo upload with robust error handling
+    const photo = formData.photo;
+    
+    if (photo && photo.data) {
+      console.log('Photo received, uploading to storage');
+      console.log('Photo details:', {
+        name: photo.name,
+        type: photo.type,
+        size: photo.data.length
+      });
       
-      // Handle photo upload
-      let photo_url = null;
-      const photo = formData.photo;
-      
-      if (photo && photo.data) {
-        console.log('Photo received, uploading to storage');
-        console.log('Photo details:', {
-          name: photo.name,
-          type: photo.type,
-          size: photo.data.length
-        });
+      try {
+        // Check if Supabase is properly configured
+        if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+          console.error('Supabase environment variables not set');
+          return c.json({ 
+            error: 'Storage configuration missing', 
+            details: 'Server storage is not properly configured' 
+          }, 500);
+        }
         
         const fileName = `student-photos/${registration_number}_${Date.now()}_${photo.name}`;
         
-        try {
-          const { data, error } = await supabase.storage
-            .from('student-docs')
-            .upload(fileName, photo.data, { contentType: photo.type });
-            
-          if (error) {
-            console.error('Error uploading photo:', error);
-            return c.json({ error: 'Failed to upload photo', details: error.message }, 500);
-          }
+        const { data, error } = await supabase.storage
+          .from('student-docs')
+          .upload(fileName, photo.data, { contentType: photo.type });
           
-          // Get the public URL
-          const { data: urlData } = supabase.storage
-            .from('student-docs')
-            .getPublicUrl(fileName);
-            
-          photo_url = urlData.publicUrl;
-          console.log('Photo uploaded successfully:', photo_url);
-        } catch (uploadError) {
-          console.error('Exception during photo upload:', uploadError);
-          return c.json({ error: 'Failed to upload photo', details: uploadError.message }, 500);
+        if (error) {
+          console.error('Error uploading photo:', error);
+          return c.json({ error: 'Failed to upload photo', details: error.message }, 500);
         }
+        
+        // Get the public URL
+        const { data: urlData } = supabase.storage
+          .from('student-docs')
+          .getPublicUrl(fileName);
+          
+        student_photo_url = urlData.publicUrl;
+        console.log('Photo uploaded successfully:', student_photo_url);
+      } catch (uploadError) {
+        console.error('Exception during photo upload:', uploadError);
+        return c.json({ error: 'Failed to upload photo', details: uploadError.message }, 500);
       }
-    } catch (parseError) {
-      console.error('Error parsing form data:', parseError);
-      return c.json({
-        error: 'Failed to process form data',
-        details: parseError.message,
-        stack: parseError.stack
-      }, 400);
     }
     
     // Determine default password if not provided
@@ -952,74 +1009,101 @@ async function handleStudentWithPhoto(c) {
       }
     }
     
-    // Hash the password before storing
-    const hashedPassword = await bcrypt.hash(finalPassword, 10);
-    
-    // Format date properly for database
-    let formattedDate = null;
-    if (date_of_birth) {
-      try {
-        const dateObj = new Date(date_of_birth);
-        if (!isNaN(dateObj.getTime())) {
-          formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+    try {
+      // Hash the password before storing
+      const hashedPassword = await bcrypt.hash(finalPassword, 10);
+      
+      // Format date properly for database
+      let formattedDate = null;
+      if (date_of_birth) {
+        try {
+          const dateObj = new Date(date_of_birth);
+          if (!isNaN(dateObj.getTime())) {
+            formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+          }
+        } catch (dateErr) {
+          console.error('Error formatting date:', dateErr);
         }
-      } catch (err) {
-        console.error('Error formatting date:', err);
       }
+      
+      console.log('Inserting student with data:', {
+        registration_number,
+        name,
+        course,
+        level_of_study,
+        photo_url: student_photo_url || '[NO PHOTO URL]',
+        national_id: national_id || '[NO NATIONAL ID]',
+        birth_certificate: birth_certificate || '[NO BIRTH CERTIFICATE]',
+        date_of_birth: formattedDate || '[NO DOB]',
+        email: email || '[NO EMAIL]',
+        password: 'HASHED'
+      });
+      
+      // Check database connection before insert
+      try {
+        await pool.query('SELECT 1');
+        console.log('Database connection successful');
+      } catch (dbError) {
+        console.error('Database connection failed:', dbError);
+        return c.json({
+          error: 'Database connection failed',
+          details: 'The server could not connect to the database',
+          originalError: dbError.message
+        }, 503);
+      }
+      
+      const { rows } = await pool.query(
+        `INSERT INTO students (
+          registration_number, name, course, level_of_study, photo_url,
+          national_id, birth_certificate, date_of_birth, password, email, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+        [
+          registration_number, name, course, level_of_study, student_photo_url,
+          national_id, birth_certificate, formattedDate, hashedPassword, email, 'active'
+        ]
+      );
+      
+      return c.json({
+        message: 'Student created successfully',
+        student: rows[0]
+      });
+    } catch (dbOperationError) {
+      console.error('Error in database operation:', dbOperationError);
+      return c.json({
+        error: 'Database operation failed',
+        details: dbOperationError.message,
+        stack: process.env.NODE_ENV === 'development' ? dbOperationError.stack : undefined
+      }, 500);
     }
-    
-    console.log('Inserting student with data:', {
-      registration_number,
-      name,
-      course,
-      level_of_study,
-      photo_url,
-      national_id,
-      birth_certificate,
-      date_of_birth: formattedDate,
-      email,
-      password: 'HASHED'
-    });
-    
-    const { rows } = await pool.query(
-      `INSERT INTO students (
-        registration_number, name, course, level_of_study, photo_url,
-        national_id, birth_certificate, date_of_birth, password, email, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [
-        registration_number, name, course, level_of_study, photo_url,
-        national_id, birth_certificate, formattedDate, hashedPassword, email, 'active'
-      ]
-    );
-    
-    return c.json({
-      message: 'Student created successfully',
-      student: rows[0]
-    });
   } catch (error) {
     console.error('Error creating student with photo:', error);
     console.error('Error stack:', error.stack);
     
     // Provide more specific error details based on error type
     let errorMessage = 'Failed to create student';
-    let errorDetails = error.message;
+    let errorDetails = error.message || 'Unknown error occurred';
     let statusCode = 500;
     
     if (error instanceof SyntaxError && error.message.includes('JSON')) {
       errorMessage = 'Invalid form data';
       errorDetails = 'Could not parse the form data. Please check your form submission.';
       statusCode = 400;
-    } else if (error.message.includes('parseBody')) {
+    } else if (error.message && error.message.includes('parseBody')) {
       errorMessage = 'Form parsing error';
       errorDetails = 'There was a problem processing your form data. Make sure your form is properly formatted.';
       statusCode = 400;
+    } else if (error.message && error.message.includes('pool')) {
+      errorMessage = 'Database connection error';
+      errorDetails = 'Could not connect to the database. Please try again later.';
+      statusCode = 503;
     }
     
     return c.json({ 
       error: errorMessage, 
       details: errorDetails,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      type: error.constructor.name
+      errorType: error.constructor ? error.constructor.name : 'Unknown',
+      timestamp: new Date().toISOString(),
+      path: '/students (multipart handler)'
     }, statusCode);
   }
 }
@@ -1034,7 +1118,7 @@ app.put('/students/:id', async (c) => {
     console.log('Update request content-type:', contentType);
     
     let data;
-    let photo_url = null;
+    let update_photo_url = null;
     
     // Handle multipart/form-data (with photo)
     if (contentType.includes('multipart/form-data')) {
@@ -1075,9 +1159,9 @@ app.put('/students/:id', async (c) => {
             .from('student-docs')
             .getPublicUrl(fileName);
             
-          photo_url = urlData.publicUrl;
-          data.photo_url = photo_url;
-          console.log('Photo updated successfully:', photo_url);
+          update_photo_url = urlData.publicUrl;
+          data.photo_url = update_photo_url;
+          console.log('Photo updated successfully:', update_photo_url);
         }
       } catch (formError) {
         console.error('Error processing form data for update:', formError);
@@ -1106,13 +1190,16 @@ app.put('/students/:id', async (c) => {
       name, 
       course, 
       level_of_study, 
-      photo_url,
+      photo_url: extracted_photo_url,
       national_id,
       birth_certificate,
       date_of_birth,
       password,
       email
     } = data;
+    
+    // Use the photo URL from the form upload if available, otherwise use what came in the data
+    const final_photo_url = update_photo_url || extracted_photo_url;
     
     // Get current student data to determine if we need to update password
     const currentStudent = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
@@ -1163,7 +1250,7 @@ app.put('/students/:id', async (c) => {
       name,
       course,
       level_of_study,
-      photo_url: photo_url || null,
+      photo_url: final_photo_url || null,
       national_id: national_id || null,
       birth_certificate: birth_certificate || null,
       date_of_birth: formattedDate,
@@ -1177,7 +1264,7 @@ app.put('/students/:id', async (c) => {
         national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9, email=$10
       WHERE id=$11 RETURNING *`,
       [
-        registration_number, name, course, level_of_study, photo_url || null,
+        registration_number, name, course, level_of_study, final_photo_url || null,
         national_id || null, birth_certificate || null, formattedDate, finalPassword, email || null, id
       ]
     );
