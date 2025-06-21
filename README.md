@@ -69,6 +69,7 @@ npm run dev
 - `POST /students` - Create a new student
 - `PUT /students/:id` - Update a student
 - `DELETE /students/:id` - Delete a student
+- `POST /students/promote` - Promote a student to a new level of study
 
 ### Units
 - `GET /units` - Get all units

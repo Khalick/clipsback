@@ -4,53 +4,48 @@ app.post('/students/promote', async (c) => {
     const body = await c.req.json();
     console.log('Student promotion request received:', body);
     
-    // Check if we have student IDs or registration numbers
-    const student_ids = body.student_ids || body.studentIds || [];
-    const registration_numbers = body.registration_numbers || body.registrationNumbers || [];
-    const new_level = body.new_level || body.newLevel;
+    // Only accept registration_number and new_level
+    const registration_number = body.registration_number;
+    const new_level = body.new_level;
     
-    if ((!student_ids || student_ids.length === 0) && 
-        (!registration_numbers || registration_numbers.length === 0)) {
+    console.log('Parsed promotion data:', {
+      registration_number,
+      new_level
+    });
+    
+    if (!registration_number) {
       return c.json({ 
         error: 'Missing required field', 
-        details: 'Student IDs or registration numbers are required' 
+        details: 'Registration number is required. Please provide "registration_number" in your request.'
       }, 400);
     }
     
     if (!new_level) {
       return c.json({ 
         error: 'Missing required field', 
-        details: 'New level of study is required' 
+        details: 'New level of study is required. Please provide "new_level" with the target level of study.' 
       }, 400);
     }
     
-    let results = [];
+    // Promote by registration number
+    console.log('Promoting student by registration number:', registration_number);
+    const { rows } = await pool.query(
+      `UPDATE students SET 
+        level_of_study=$1
+      WHERE registration_number = $2 RETURNING *`,
+      [new_level, registration_number]
+    );
     
-    // Promote by student IDs
-    if (student_ids && student_ids.length > 0) {
-      const { rows } = await pool.query(
-        `UPDATE students SET 
-          level_of_study=$1
-        WHERE id = ANY($2) RETURNING *`,
-        [new_level, student_ids]
-      );
-      results = results.concat(rows);
-    }
-    
-    // Promote by registration numbers
-    if (registration_numbers && registration_numbers.length > 0) {
-      const { rows } = await pool.query(
-        `UPDATE students SET 
-          level_of_study=$1
-        WHERE registration_number = ANY($2) RETURNING *`,
-        [new_level, registration_numbers]
-      );
-      results = results.concat(rows);
+    if (rows.length === 0) {
+      return c.json({
+        error: 'Student not found',
+        details: `No student found with registration number: ${registration_number}`
+      }, 404);
     }
     
     return c.json({ 
-      message: `${results.length} students promoted successfully`, 
-      students: results 
+      message: 'Student promoted successfully', 
+      student: rows[0] 
     });
   } catch (error) {
     console.error('Error promoting students:', error);

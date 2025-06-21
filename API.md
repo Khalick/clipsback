@@ -215,6 +215,45 @@ DELETE /students/:id
 }
 ```
 
+### Promote Student
+
+```
+POST /students/promote
+```
+
+**Request Body:**
+```json
+{
+  "registration_number": "REG123456",
+  "new_level": 2
+}
+```
+
+**Response (Success):**
+```json
+{
+  "message": "Student promoted successfully",
+  "student": {
+    "id": "uuid_here",
+    "registration_number": "REG123456",
+    "first_name": "John",
+    "last_name": "Doe",
+    "level_of_study": 2,
+    "email": "john.doe@example.com",
+    "status": "active"
+    // other student properties
+  }
+}
+```
+
+**Response (Not Found):**
+```json
+{
+  "error": "Student not found",
+  "details": "No student found with registration number: REG123456"
+}
+```
+
 ## Units
 
 ### Get All Units

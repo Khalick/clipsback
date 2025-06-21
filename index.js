@@ -120,26 +120,19 @@ app.post('/students/promote', async (c) => {
       }, 400);
     }
     
-    // Check if we have student IDs or registration numbers
-    const student_ids = body.student_ids || body.studentIds || [];
-    const registration_numbers = body.registration_numbers || body.registrationNumbers || [];
-    const new_level = body.new_level || body.newLevel;
+    // Only accept registration_number and new_level
+    const registration_number = body.registration_number;
+    const new_level = body.new_level;
     
     console.log('Parsed promotion data:', {
-      student_ids,
-      registration_numbers,
+      registration_number,
       new_level
     });
     
-    if ((!student_ids || student_ids.length === 0) && 
-        (!registration_numbers || registration_numbers.length === 0)) {
+    if (!registration_number) {
       return c.json({ 
         error: 'Missing required field', 
-        details: 'Student IDs or registration numbers are required. Please provide either "student_ids" or "registration_numbers" with at least one value.',
-        receivedData: {
-          student_ids: body.student_ids || body.studentIds,
-          registration_numbers: body.registration_numbers || body.registrationNumbers
-        }
+        details: 'Registration number is required. Please provide "registration_number" in your request.'
       }, 400);
     }
     
@@ -150,62 +143,25 @@ app.post('/students/promote', async (c) => {
       }, 400);
     }
     
-    // Convert single values to arrays and validate types
-    let finalStudentIds = student_ids;
-    let finalRegistrationNumbers = registration_numbers;
+    // Promote by registration number
+    console.log('Promoting student by registration number:', registration_number);
+    const { rows } = await pool.query(
+      `UPDATE students SET 
+        level_of_study=$1
+      WHERE registration_number = $2 RETURNING *`,
+      [new_level, registration_number]
+    );
     
-    // Handle single value for student_ids by converting to array
-    if (student_ids && !Array.isArray(student_ids)) {
-      console.log('Converting single student ID to array:', student_ids);
-      finalStudentIds = [student_ids];
-    }
-    
-    // Handle single value for registration_numbers by converting to array
-    if (registration_numbers && !Array.isArray(registration_numbers)) {
-      console.log('Converting single registration number to array:', registration_numbers);
-      finalRegistrationNumbers = [registration_numbers];
-    }
-    
-    let results = [];
-    
-    // Promote by student IDs
-    if (finalStudentIds && finalStudentIds.length > 0) {
-      try {
-        console.log('Promoting students by ID:', finalStudentIds);
-        const { rows } = await pool.query(
-          `UPDATE students SET 
-            level_of_study=$1
-          WHERE id = ANY($2) RETURNING *`,
-          [new_level, finalStudentIds]
-        );
-        results = results.concat(rows);
-        console.log(`Updated ${rows.length} students by ID`);
-      } catch (dbError) {
-        console.error('Error promoting students by ID:', dbError);
-        // Continue to try registration numbers even if IDs fail
-      }
-    }
-    
-    // Promote by registration numbers
-    if (finalRegistrationNumbers && finalRegistrationNumbers.length > 0) {
-      try {
-        console.log('Promoting students by registration number:', finalRegistrationNumbers);
-        const { rows } = await pool.query(
-          `UPDATE students SET 
-            level_of_study=$1
-          WHERE registration_number = ANY($2) RETURNING *`,
-          [new_level, finalRegistrationNumbers]
-        );
-        results = results.concat(rows);
-        console.log(`Updated ${rows.length} students by registration number`);
-      } catch (dbError) {
-        console.error('Error promoting students by registration number:', dbError);
-      }
+    if (rows.length === 0) {
+      return c.json({
+        error: 'Student not found',
+        details: `No student found with registration number: ${registration_number}`
+      }, 404);
     }
     
     return c.json({ 
-      message: `${results.length} students promoted successfully`, 
-      students: results 
+      message: 'Student promoted successfully', 
+      student: rows[0] 
     });
   } catch (error) {
     console.error('Error promoting students:', error);
