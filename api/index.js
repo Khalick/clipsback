@@ -4,6 +4,7 @@ import { app } from '../index.js';
 export default async function handler(req, res) {
   try {
     console.log(`${req.method} ${req.url}`);
+    console.log('Request headers:', req.headers);
     
     // Convert the Vercel request to a Fetch API request
     const url = new URL(req.url, `http://${req.headers.host}`);
@@ -14,9 +15,20 @@ export default async function handler(req, res) {
       headers: new Headers(req.headers)
     };
     
+    // Special handling for multipart/form-data requests
+    const contentType = req.headers['content-type'] || '';
+    console.log('Content-Type:', contentType);
+    
     // Only add body for methods that can have a body (not GET or HEAD)
     if (req.body && req.method !== 'GET' && req.method !== 'HEAD') {
-      requestInit.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      // Pass along the raw body for multipart/form-data - let Hono handle the parsing
+      if (contentType.includes('multipart/form-data')) {
+        console.log('Handling multipart/form-data body');
+        requestInit.body = req.body;
+      } else {
+        // For other content types, stringify if needed
+        requestInit.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      }
     }
     
     const request = new Request(url, requestInit);

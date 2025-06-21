@@ -105,6 +105,69 @@ app.get('/students/status/:statusType', async (c) => {
   }
 });
 
+// Promote students endpoint
+app.post('/students/promote', async (c) => {
+  try {
+    const body = await c.req.json();
+    console.log('Student promotion request received:', body);
+    
+    // Check if we have student IDs or registration numbers
+    const student_ids = body.student_ids || body.studentIds || [];
+    const registration_numbers = body.registration_numbers || body.registrationNumbers || [];
+    const new_level = body.new_level || body.newLevel;
+    
+    if ((!student_ids || student_ids.length === 0) && 
+        (!registration_numbers || registration_numbers.length === 0)) {
+      return c.json({ 
+        error: 'Missing required field', 
+        details: 'Student IDs or registration numbers are required' 
+      }, 400);
+    }
+    
+    if (!new_level) {
+      return c.json({ 
+        error: 'Missing required field', 
+        details: 'New level of study is required' 
+      }, 400);
+    }
+    
+    let results = [];
+    
+    // Promote by student IDs
+    if (student_ids && student_ids.length > 0) {
+      const { rows } = await pool.query(
+        `UPDATE students SET 
+          level_of_study=$1
+        WHERE id = ANY($2) RETURNING *`,
+        [new_level, student_ids]
+      );
+      results = results.concat(rows);
+    }
+    
+    // Promote by registration numbers
+    if (registration_numbers && registration_numbers.length > 0) {
+      const { rows } = await pool.query(
+        `UPDATE students SET 
+          level_of_study=$1
+        WHERE registration_number = ANY($2) RETURNING *`,
+        [new_level, registration_numbers]
+      );
+      results = results.concat(rows);
+    }
+    
+    return c.json({ 
+      message: `${results.length} students promoted successfully`, 
+      students: results 
+    });
+  } catch (error) {
+    console.error('Error promoting students:', error);
+    return c.json({ 
+      error: 'Failed to promote students', 
+      details: error.message 
+    }, 500);
+  }
+});
+
 // Get student by registration number
 app.get('/student/registration/:regNumber', async (c) => {
   try {
@@ -693,7 +756,28 @@ app.get('/students/:id', async (c) => {
 // Create a new student
 app.post('/students', async (c) => {
   try {
-    const data = await c.req.json();
+    // Check if the request is multipart form data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
+    
+    if (contentType.includes('multipart/form-data')) {
+      console.log('Detected multipart/form-data request, redirecting to photo handler');
+      // Redirect to the multipart handler
+      return await handleStudentWithPhoto(c);
+    }
+    
+    console.log('Processing standard JSON request');
+    // Handle JSON request
+    let data;
+    try {
+      data = await c.req.json();
+    } catch (jsonError) {
+      console.error('Error parsing JSON:', jsonError);
+      return c.json({
+        error: 'Invalid JSON data',
+        details: jsonError.message
+      }, 400);
+    }
     console.log('Received student data:', data);
     
     const { 
@@ -705,7 +789,8 @@ app.post('/students', async (c) => {
       national_id,
       birth_certificate,
       date_of_birth,
-      password
+      password,
+      email
     } = data;
     
     // Validate required fields
@@ -754,17 +839,18 @@ app.post('/students', async (c) => {
       national_id: national_id || null,
       birth_certificate: birth_certificate || null,
       date_of_birth: formattedDate,
+      email: email || null,
       password: 'HASHED'
     });
     
     const { rows } = await pool.query(
       `INSERT INTO students (
         registration_number, name, course, level_of_study, photo_url,
-        national_id, birth_certificate, date_of_birth, password
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+        national_id, birth_certificate, date_of_birth, password, email, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
       [
         registration_number, name, course, level_of_study, photo_url || null,
-        national_id || null, birth_certificate || null, formattedDate, hashedPassword
+        national_id || null, birth_certificate || null, formattedDate, hashedPassword, email || null, 'active'
       ]
     );
     
@@ -779,11 +865,240 @@ app.post('/students', async (c) => {
   }
 });
 
+// Handle student registration with photo upload
+async function handleStudentWithPhoto(c) {
+  try {
+    console.log('Handling student registration with photo');
+    
+    try {
+      // Parse the multipart form data
+      const formData = await c.req.parseBody();
+      console.log('Form data keys:', Object.keys(formData));
+      
+      // Extract student data
+      const registration_number = formData.registration_number || '';
+      const name = formData.name || '';
+      const course = formData.course || '';
+      const level_of_study = formData.level_of_study || '';
+      const national_id = formData.national_id || null;
+      const birth_certificate = formData.birth_certificate || null;
+      const date_of_birth = formData.date_of_birth || null;
+      const password = formData.password || null;
+      const email = formData.email || null;
+      
+      // Validate required fields
+      if (!registration_number || !name || !course || !level_of_study) {
+        return c.json({ 
+          error: 'Missing required fields', 
+          details: 'Registration number, name, course, and level of study are required' 
+        }, 400);
+      }
+      
+      // Handle photo upload
+      let photo_url = null;
+      const photo = formData.photo;
+      
+      if (photo && photo.data) {
+        console.log('Photo received, uploading to storage');
+        console.log('Photo details:', {
+          name: photo.name,
+          type: photo.type,
+          size: photo.data.length
+        });
+        
+        const fileName = `student-photos/${registration_number}_${Date.now()}_${photo.name}`;
+        
+        try {
+          const { data, error } = await supabase.storage
+            .from('student-docs')
+            .upload(fileName, photo.data, { contentType: photo.type });
+            
+          if (error) {
+            console.error('Error uploading photo:', error);
+            return c.json({ error: 'Failed to upload photo', details: error.message }, 500);
+          }
+          
+          // Get the public URL
+          const { data: urlData } = supabase.storage
+            .from('student-docs')
+            .getPublicUrl(fileName);
+            
+          photo_url = urlData.publicUrl;
+          console.log('Photo uploaded successfully:', photo_url);
+        } catch (uploadError) {
+          console.error('Exception during photo upload:', uploadError);
+          return c.json({ error: 'Failed to upload photo', details: uploadError.message }, 500);
+        }
+      }
+    } catch (parseError) {
+      console.error('Error parsing form data:', parseError);
+      return c.json({
+        error: 'Failed to process form data',
+        details: parseError.message,
+        stack: parseError.stack
+      }, 400);
+    }
+    
+    // Determine default password if not provided
+    let finalPassword = password;
+    if (!finalPassword) {
+      // Use national_id or birth_certificate as password
+      if (national_id) {
+        finalPassword = national_id;
+      } else if (birth_certificate) {
+        finalPassword = birth_certificate;
+      } else {
+        finalPassword = 'defaultpassword';
+      }
+    }
+    
+    // Hash the password before storing
+    const hashedPassword = await bcrypt.hash(finalPassword, 10);
+    
+    // Format date properly for database
+    let formattedDate = null;
+    if (date_of_birth) {
+      try {
+        const dateObj = new Date(date_of_birth);
+        if (!isNaN(dateObj.getTime())) {
+          formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+        }
+      } catch (err) {
+        console.error('Error formatting date:', err);
+      }
+    }
+    
+    console.log('Inserting student with data:', {
+      registration_number,
+      name,
+      course,
+      level_of_study,
+      photo_url,
+      national_id,
+      birth_certificate,
+      date_of_birth: formattedDate,
+      email,
+      password: 'HASHED'
+    });
+    
+    const { rows } = await pool.query(
+      `INSERT INTO students (
+        registration_number, name, course, level_of_study, photo_url,
+        national_id, birth_certificate, date_of_birth, password, email, status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [
+        registration_number, name, course, level_of_study, photo_url,
+        national_id, birth_certificate, formattedDate, hashedPassword, email, 'active'
+      ]
+    );
+    
+    return c.json({
+      message: 'Student created successfully',
+      student: rows[0]
+    });
+  } catch (error) {
+    console.error('Error creating student with photo:', error);
+    console.error('Error stack:', error.stack);
+    
+    // Provide more specific error details based on error type
+    let errorMessage = 'Failed to create student';
+    let errorDetails = error.message;
+    let statusCode = 500;
+    
+    if (error instanceof SyntaxError && error.message.includes('JSON')) {
+      errorMessage = 'Invalid form data';
+      errorDetails = 'Could not parse the form data. Please check your form submission.';
+      statusCode = 400;
+    } else if (error.message.includes('parseBody')) {
+      errorMessage = 'Form parsing error';
+      errorDetails = 'There was a problem processing your form data. Make sure your form is properly formatted.';
+      statusCode = 400;
+    }
+    
+    return c.json({ 
+      error: errorMessage, 
+      details: errorDetails,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
+      type: error.constructor.name
+    }, statusCode);
+  }
+}
+
 // Update a student
 app.put('/students/:id', async (c) => {
   try {
     const id = c.req.param('id');
-    const data = await c.req.json();
+    
+    // Check if the request is multipart form data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Update request content-type:', contentType);
+    
+    let data;
+    let photo_url = null;
+    
+    // Handle multipart/form-data (with photo)
+    if (contentType.includes('multipart/form-data')) {
+      try {
+        console.log('Processing multipart form data for student update');
+        const formData = await c.req.parseBody();
+        
+        // Extract form fields
+        data = {
+          registration_number: formData.registration_number,
+          name: formData.name,
+          course: formData.course,
+          level_of_study: formData.level_of_study,
+          national_id: formData.national_id,
+          birth_certificate: formData.birth_certificate,
+          date_of_birth: formData.date_of_birth,
+          password: formData.password,
+          email: formData.email
+        };
+        
+        // Handle photo if present
+        const photo = formData.photo;
+        if (photo && photo.data) {
+          console.log('Photo included in update, uploading...');
+          const fileName = `student-photos/${data.registration_number || id}_${Date.now()}_${photo.name}`;
+          
+          const { data: uploadData, error } = await supabase.storage
+            .from('student-docs')
+            .upload(fileName, photo.data, { contentType: photo.type });
+            
+          if (error) {
+            console.error('Error uploading photo during update:', error);
+            return c.json({ error: 'Failed to upload photo', details: error.message }, 500);
+          }
+          
+          // Get the public URL
+          const { data: urlData } = supabase.storage
+            .from('student-docs')
+            .getPublicUrl(fileName);
+            
+          photo_url = urlData.publicUrl;
+          data.photo_url = photo_url;
+          console.log('Photo updated successfully:', photo_url);
+        }
+      } catch (formError) {
+        console.error('Error processing form data for update:', formError);
+        return c.json({
+          error: 'Failed to process form data',
+          details: formError.message
+        }, 400);
+      }
+    } else {
+      // Handle standard JSON request
+      try {
+        data = await c.req.json();
+      } catch (jsonError) {
+        console.error('Error parsing JSON for update:', jsonError);
+        return c.json({
+          error: 'Invalid JSON data',
+          details: jsonError.message
+        }, 400);
+      }
+    }
+    
     console.log('Updating student data:', { id, ...data });
     
     const { 
@@ -795,7 +1110,8 @@ app.put('/students/:id', async (c) => {
       national_id,
       birth_certificate,
       date_of_birth,
-      password
+      password,
+      email
     } = data;
     
     // Get current student data to determine if we need to update password
@@ -851,17 +1167,18 @@ app.put('/students/:id', async (c) => {
       national_id: national_id || null,
       birth_certificate: birth_certificate || null,
       date_of_birth: formattedDate,
+      email: email || null,
       password: shouldHashPassword ? 'HASHED' : 'UNCHANGED'
     });
     
     const { rows } = await pool.query(
       `UPDATE students SET 
         registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5,
-        national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9
-      WHERE id=$10 RETURNING *`,
+        national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9, email=$10
+      WHERE id=$11 RETURNING *`,
       [
         registration_number, name, course, level_of_study, photo_url || null,
-        national_id || null, birth_certificate || null, formattedDate, finalPassword, id
+        national_id || null, birth_certificate || null, formattedDate, finalPassword, email || null, id
       ]
     );
     
@@ -1511,6 +1828,57 @@ app.get('/api/health', async (c) => {
       message: 'Database connection failed!',
       details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 503);
+  }
+});
+
+// Forgot password endpoint
+app.post('/student/auth/forgot-password', async (c) => {
+  try {
+    const { registration_number, email } = await c.req.json();
+    
+    if (!registration_number || !email) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Registration number and email are required' 
+      }, 400);
+    }
+    
+    // Check if student exists with matching registration number and email
+    const { rows } = await pool.query(
+      'SELECT * FROM students WHERE registration_number = $1 AND email = $2',
+      [registration_number, email]
+    );
+    
+    if (rows.length === 0) {
+      return c.json({ 
+        error: 'Invalid credentials', 
+        details: 'No student found with the provided registration number and email' 
+      }, 404);
+    }
+    
+    // Generate a temporary password
+    const tempPassword = Math.random().toString(36).slice(-8);
+    const hashedPassword = await bcrypt.hash(tempPassword, 10);
+    
+    // Update the student's password
+    await pool.query(
+      'UPDATE students SET password = $1 WHERE id = $2',
+      [hashedPassword, rows[0].id]
+    );
+    
+    // In a real application, you would send an email with the temporary password
+    // For this implementation, we'll just return it in the response
+    return c.json({ 
+      message: 'Password reset successful', 
+      temp_password: tempPassword,
+      note: 'In a production environment, this would be sent via email instead of being returned in the response'
+    });
+  } catch (error) {
+    console.error('Error in forgot password:', error);
+    return c.json({ 
+      error: 'Failed to process password reset', 
+      details: error.message 
+    }, 500);
   }
 });
 
