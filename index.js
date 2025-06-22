@@ -2254,17 +2254,82 @@ app.get('/exam-cards', async (c) => {
 // Add POST endpoint for exam cards
 app.post('/exam-cards', async (c) => {
   try {
-    const data = await c.req.json();
-    console.log('Creating new exam card:', data);
+    console.log('POST /exam-cards request received');
     
-    const { student_id, file_url } = data;
+    // Check if the request is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
+    console.log('Full headers:', Object.fromEntries(c.req.raw.headers.entries()));
     
+    let student_id;
+    let file_url;
+    
+    // Handle multipart/form-data (with possible file upload)
+    if (contentType.includes('multipart/form-data')) {
+      try {
+        console.log('Processing multipart form data for exam card');
+        const formData = await c.req.parseBody();
+        console.log('Form data parsed:', Object.keys(formData));
+        
+        student_id = formData.student_id;
+        file_url = formData.file_url;
+        
+        // Handle file upload if present
+        const file = formData.file;
+        if (file && file.data) {
+          console.log('File included in request, uploading...');
+          
+          try {
+            const uploadResult = await uploadFileToSupabase(
+              file, 
+              'exam-cards', 
+              `student_${student_id || 'unknown'}`
+            );
+            
+            file_url = uploadResult.publicUrl;
+            console.log('File uploaded successfully:', file_url);
+          } catch (uploadError) {
+            console.error('Error uploading file for exam card:', uploadError);
+            return c.json({
+              error: 'Failed to upload file for exam card',
+              details: uploadError.message
+            }, 500);
+          }
+        }
+      } catch (formError) {
+        console.error('Error processing form data for exam card:', formError);
+        return c.json({
+          error: 'Failed to process form data',
+          details: formError.message
+        }, 400);
+      }
+    } else {
+      // Handle standard JSON request
+      try {
+        const data = await c.req.json();
+        console.log('Creating new exam card from JSON data:', data);
+        
+        student_id = data.student_id;
+        file_url = data.file_url;
+      } catch (jsonError) {
+        console.error('Error parsing JSON for exam card:', jsonError);
+        return c.json({
+          error: 'Invalid JSON data',
+          details: jsonError.message,
+          message: 'Make sure you are sending a valid JSON body with the correct content-type header'
+        }, 400);
+      }
+    }
+    
+    // Validate required fields
     if (!student_id || !file_url) {
       return c.json({ 
         error: 'Missing required fields', 
         details: 'Student ID and file URL are required' 
       }, 400);
     }
+    
+    console.log('Inserting exam card in database:', { student_id, file_url });
     
     const { rows } = await pool.query(
       'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) RETURNING *',
@@ -2279,7 +2344,8 @@ app.post('/exam-cards', async (c) => {
     console.error('Error creating exam card:', error);
     return c.json({ 
       error: 'Failed to create exam card', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 500);
   }
 });
