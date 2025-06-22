@@ -2260,7 +2260,7 @@ app.post('/exam-cards', async (c) => {
     const contentType = c.req.header('content-type') || '';
     console.log('Request content-type:', contentType);
     
-    let student_id;
+    let registration_number;
     let file_url;
     
     // Handle multipart/form-data (with possible file upload)
@@ -2270,7 +2270,7 @@ app.post('/exam-cards', async (c) => {
         const formData = await c.req.formData();
         console.log('Form data parsed:', Array.from(formData.keys()));
         
-        student_id = formData.get('student_id');
+        registration_number = formData.get('registration_number');
         file_url = formData.get('file_url');
         
         // Handle file upload if present
@@ -2293,7 +2293,7 @@ app.post('/exam-cards', async (c) => {
             const uploadResult = await uploadFileToSupabase(
               fileObj, 
               'exam-cards', 
-              `student_${student_id || 'unknown'}`
+              `${registration_number || 'unknown'}`
             );
             
             file_url = uploadResult.publicUrl;
@@ -2320,7 +2320,7 @@ app.post('/exam-cards', async (c) => {
         const data = await c.req.json();
         console.log('Creating new exam card from JSON data:', data);
         
-        student_id = data.student_id;
+        registration_number = data.registration_number;
         file_url = data.file_url;
       } catch (jsonError) {
         console.error('Error parsing JSON for exam card:', jsonError);
@@ -2333,14 +2333,29 @@ app.post('/exam-cards', async (c) => {
     }
     
     // Validate required fields
-    if (!student_id || !file_url) {
+    if (!registration_number || !file_url) {
       return c.json({ 
         error: 'Missing required fields', 
-        details: 'Student ID and file URL are required' 
+        details: 'Registration number and file URL are required' 
       }, 400);
     }
     
-    console.log('Inserting exam card in database:', { student_id, file_url });
+    // Get student_id from registration_number
+    const studentResult = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [registration_number]
+    );
+    
+    if (studentResult.rows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    const student_id = studentResult.rows[0].id;
+    
+    console.log('Inserting exam card in database:', { registration_number, student_id, file_url });
     
     const { rows } = await pool.query(
       'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) RETURNING *',
@@ -2362,10 +2377,25 @@ app.post('/exam-cards', async (c) => {
 });
 
 // Upload exam card with file upload (admin)
-app.post('/students/:id/upload-exam-card', async (c) => {
+app.post('/students/registration/:regNumber/upload-exam-card', async (c) => {
   try {
-    const studentId = c.req.param('id');
-    console.log('Uploading exam card for student:', studentId);
+    const registration_number = c.req.param('regNumber');
+    console.log('Uploading exam card for student with registration number:', registration_number);
+    
+    // Get student ID from registration number
+    const studentResult = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [registration_number]
+    );
+    
+    if (studentResult.rows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    const student_id = studentResult.rows[0].id;
     
     // Parse multipart form data
     const formData = await c.req.parseBody();
@@ -2378,7 +2408,57 @@ app.post('/students/:id/upload-exam-card', async (c) => {
     }
     
     // Upload file to Supabase
-    const fileName = `exam-cards/${studentId}_${Date.now()}_${file.name}`;
+    const fileName = `exam-cards/${registration_number}_${Date.now()}_${file.name}`;
+    const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
+    if (error) return c.json({ error: error.message }, 500);
+    const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
+    
+    // Update or insert exam card record in database
+    await pool.query(
+      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
+      [student_id, publicURL]
+    );
+    
+    return c.json({ 
+      message: 'Exam card uploaded successfully.', 
+      registration_number,
+      url: publicURL 
+    });
+  } catch (error) {
+    console.error('Error uploading exam card:', error);
+    return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
+  }
+});
+
+// Keep the old endpoint for backward compatibility
+app.post('/students/:id/upload-exam-card', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    
+    // Get registration number from student ID
+    const studentResult = await pool.query(
+      'SELECT registration_number FROM students WHERE id = $1',
+      [studentId]
+    );
+    
+    if (studentResult.rows.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    const registration_number = studentResult.rows[0].registration_number;
+    
+    // Parse multipart form data
+    const formData = await c.req.parseBody();
+    console.log('Form data received:', Object.keys(formData));
+    
+    // Extract file
+    const file = formData.file;
+    if (!file) {
+      return c.json({ error: 'No file uploaded' }, 400);
+    }
+    
+    // Upload file to Supabase
+    const fileName = `exam-cards/${registration_number}_${Date.now()}_${file.name}`;
     const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
     if (error) return c.json({ error: error.message }, 500);
     const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
@@ -2389,7 +2469,11 @@ app.post('/students/:id/upload-exam-card', async (c) => {
       [studentId, publicURL]
     );
     
-    return c.json({ message: 'Exam card uploaded.', url: publicURL });
+    return c.json({ 
+      message: 'Exam card uploaded successfully.', 
+      url: publicURL,
+      note: 'This endpoint is deprecated, please use /students/registration/:regNumber/upload-exam-card instead'
+    });
   } catch (error) {
     console.error('Error uploading exam card:', error);
     return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
