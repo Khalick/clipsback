@@ -1188,7 +1188,7 @@ app.put('/students/:id', async (c) => {
                   .getPublicUrl(fileName);
                   
                 update_photo_url = urlData.publicUrl;
-                data.photo_url = update_photo_url;
+                // Don't modify data.photo_url directly since we've already destructured it
                 console.log('Photo updated successfully:', update_photo_url);
               }
             }
@@ -1226,7 +1226,7 @@ app.put('/students/:id', async (c) => {
       name, 
       course, 
       level_of_study, 
-      photo_url: extracted_photo_url,
+      photo_url,  // Use the original name for consistency
       national_id,
       birth_certificate,
       date_of_birth,
@@ -1235,7 +1235,7 @@ app.put('/students/:id', async (c) => {
     } = data;
     
     // Use the photo URL from the form upload if available, otherwise use what came in the data
-    const final_photo_url = update_photo_url || extracted_photo_url;
+    const final_photo_url = update_photo_url || photo_url;
     
     // Get current student data to determine if we need to update password
     const currentStudent = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
@@ -1416,6 +1416,28 @@ app.get('/students/:id/fees', async (c) => {
     if (rows.length === 0) return c.json({ error: 'No fee records found for this student' }, 404);
     return c.json(rows[0]);
   } catch (error) {
+    console.error('Error fetching student fees:', error);
+    return c.json({ error: 'Failed to fetch student fees', details: error.message }, 500);
+  }
+});
+
+// Get fee record by ID
+app.get('/fees/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const { rows } = await pool.query('SELECT * FROM fees WHERE id = $1', [id]);
+    if (rows.length === 0) return c.json({ error: 'Fee not found' }, 404);
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching fee record:', error);
+    return c.json({ error: 'Failed to fetch fee record', details: error.message }, 500);
+  }
+});
+
+// Update fee record
+app.put('/fees/:id', async (c) => {
+  try {
+    const id = c.req.param('id');
     const data = await c.req.json();
     const { student_id, fee_balance, total_paid, semester_fee } = data;
     const { rows } = await pool.query(
