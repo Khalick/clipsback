@@ -1065,7 +1065,7 @@ async function handleStudentWithPhoto(c) {
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
         [
           registration_number, name, course, level_of_study, student_photo_url || null,
-          national_id, birth_certificate, formattedDate, hashedPassword, email, 'active'
+          national_id, birth_certificate, formattedDate, hashedPassword, email || null, 'active'
         ]
       );
       
@@ -1551,7 +1551,7 @@ app.get('/finance', async (c) => {
 app.get('/students/:id/finance', async (c) => {
   try {
     const studentId = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM finance WHERE student_id = $1 ORDER BY created_at DESC', [studentId]);
+    const { rows } = await pool.query('SELECT * FROM finance WHERE student_id = $1', [studentId]);
     return c.json(rows);
   } catch (error) {
     console.error('Error fetching student finance records:', error);
@@ -1850,6 +1850,117 @@ app.post('/students/:id/register-unit', async (c) => {
   } catch (error) {
     console.error('Error registering unit for student:', error);
     return c.json({ error: 'Failed to register unit', details: error.message }, 500);
+  }
+});
+
+// Register units for a student in bulk
+app.post('/students/:id/register-units', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    console.log('Registering units for student:', studentId);
+    
+    let body;
+    try {
+      body = await c.req.json();
+      console.log('Registration request received:', body);
+    } catch (jsonError) {
+      console.error('Error parsing JSON in unit registration request:', jsonError);
+      return c.json({
+        error: 'Invalid JSON data',
+        details: 'The request body must be valid JSON'
+      }, 400);
+    }
+    
+    // Check if student exists
+    const studentCheck = await pool.query('SELECT id FROM students WHERE id = $1', [studentId]);
+    if (studentCheck.rows.length === 0) {
+      return c.json({ 
+        error: 'Student not found',
+        details: `No student found with ID: ${studentId}`
+      }, 404);
+    }
+    
+    // Expect an array of unit codes or an array of objects with unit_code
+    const unit_codes = Array.isArray(body) ? body : (body.units || []);
+    
+    if (!unit_codes || unit_codes.length === 0) {
+      return c.json({ 
+        error: 'Missing required field', 
+        details: 'At least one unit must be provided for registration'
+      }, 400);
+    }
+    
+    const registered_units = [];
+    const errors = [];
+    
+    // Process each unit registration
+    for (const unit of unit_codes) {
+      try {
+        const unit_code = typeof unit === 'string' ? unit : unit.unit_code;
+        
+        if (!unit_code) {
+          errors.push({
+            unit: unit,
+            error: 'Missing unit_code field'
+          });
+          continue;
+        }
+        
+        // Check if the unit exists
+        const unitCheck = await pool.query('SELECT * FROM units WHERE unit_code = $1', [unit_code]);
+        
+        if (unitCheck.rows.length === 0) {
+          errors.push({
+            unit_code: unit_code,
+            error: 'Unit does not exist'
+          });
+          continue;
+        }
+        
+        const unit_name = unitCheck.rows[0].unit_name;
+        
+        // Check if the unit is already registered by this student
+        const alreadyRegistered = await pool.query(
+          'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
+          [studentId, unit_code]
+        );
+        
+        if (alreadyRegistered.rows.length > 0) {
+          errors.push({
+            unit_code: unit_code,
+            error: 'Unit already registered by this student'
+          });
+          continue;
+        }
+        
+        // Register the unit
+        const { rows } = await pool.query(
+          'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
+          [studentId, unit_name, unit_code, 'registered']
+        );
+        
+        registered_units.push(rows[0]);
+      } catch (unitError) {
+        console.error(`Error registering unit:`, unitError);
+        errors.push({
+          unit: unit,
+          error: unitError.message
+        });
+      }
+    }
+    
+    return c.json({
+      message: `${registered_units.length} units registered successfully`,
+      registered_units: registered_units,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error) {
+    console.error('Error registering units:', error);
+    return c.json({ 
+      error: 'Failed to register units', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
   }
 });
 
@@ -2247,6 +2358,77 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
   } catch (error) {
     console.error('Error uploading fee receipt:', error);
     return c.json({ error: 'Failed to upload fee receipt', details: error.message }, 500);
+  }
+});
+
+// Upload student results with file (PDF or image)
+app.post('/students/:id/upload-results', async (c) => {
+  try {
+    const studentId = c.req.param('id');
+    console.log('Uploading results for student:', studentId);
+    
+    // Parse multipart form data
+    const formData = await c.req.parseBody();
+    console.log('Form data received:', Object.keys(formData));
+    
+    // Extract metadata
+    const semester = formData.semester;
+    const result_data = formData.result_data ? JSON.parse(formData.result_data) : {};
+    
+    if (!semester) {
+      return c.json({ 
+        error: 'Missing required field', 
+        details: 'Semester is required' 
+      }, 400);
+    }
+    
+    // Handle file upload
+    const file = formData.file;
+    let fileUrl = null;
+    
+    if (file && file.data) {
+      console.log('Results file received, uploading to storage');
+      
+      const fileName = `results/${studentId}_${semester}_${Date.now()}_${file.name}`;
+      
+      const { data, error } = await supabase.storage
+        .from('student-docs')
+        .upload(fileName, file.data, { contentType: file.type });
+        
+      if (error) {
+        console.error('Error uploading results file:', error);
+        // Continue without file if upload fails
+      } else {
+        // Get the public URL
+        const { data: urlData } = supabase.storage
+          .from('student-docs')
+          .getPublicUrl(fileName);
+          
+        fileUrl = urlData.publicUrl;
+        console.log('Results file uploaded successfully:', fileUrl);
+        
+        // Add file URL to result data
+        result_data.file_url = fileUrl;
+      }
+    }
+    
+    // Store result data in database
+    const { rows } = await pool.query(
+      'INSERT INTO results (student_id, semester, result_data) VALUES ($1, $2, $3) RETURNING *',
+      [studentId, semester, result_data]
+    );
+    
+    return c.json({
+      message: 'Student results uploaded successfully',
+      result: rows[0]
+    });
+  } catch (error) {
+    console.error('Error uploading student results:', error);
+    return c.json({ 
+      error: 'Failed to upload student results', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
   }
 });
 
