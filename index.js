@@ -2251,18 +2251,36 @@ app.get('/exam-cards', async (c) => {
   }
 });
 
-app.post('/students/:id/exam-card', async (c) => {
+// Add POST endpoint for exam cards
+app.post('/exam-cards', async (c) => {
   try {
-    const studentId = c.req.param('id');
-    const { file_url } = await c.req.json();
-    await pool.query(
-      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
-      [studentId, file_url]
+    const data = await c.req.json();
+    console.log('Creating new exam card:', data);
+    
+    const { student_id, file_url } = data;
+    
+    if (!student_id || !file_url) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Student ID and file URL are required' 
+      }, 400);
+    }
+    
+    const { rows } = await pool.query(
+      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) RETURNING *',
+      [student_id, file_url]
     );
-    return c.json({ message: 'Exam card uploaded.' });
+    
+    return c.json({ 
+      message: 'Exam card created successfully', 
+      exam_card: rows[0] 
+    });
   } catch (error) {
-    console.error('Error uploading exam card:', error);
-    return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
+    console.error('Error creating exam card:', error);
+    return c.json({ 
+      error: 'Failed to create exam card', 
+      details: error.message 
+    }, 500);
   }
 });
 

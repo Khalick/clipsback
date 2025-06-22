@@ -56,11 +56,13 @@ export default async function handler(req, res) {
         requestInit.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
         console.log('Regular body provided, length:', requestInit.body.length);
       } else {
-        console.log('No body provided for non-GET/HEAD request');
-      }
+        console.log('No body provided for non-GET/HEAD request');      }
     } else {
       console.log('No body needed for GET/HEAD request');
     }
+    
+    // Log the path being requested to help diagnose 404 errors
+    console.log(`Processing request for path: ${url.pathname}`);
     
     const request = new Request(url, requestInit);
 
@@ -70,13 +72,29 @@ export default async function handler(req, res) {
     // Convert the Fetch API response to a Vercel response
     res.statusCode = response.status;
     
+    // Log response details
+    console.log(`Response status: ${response.status}`);
+    if (response.status !== 200) {
+      console.log('Non-200 response details:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: url.toString(),
+        method: req.method
+      });
+    }
+    
     // Set headers
     for (const [key, value] of response.headers.entries()) {
       res.setHeader(key, value);
+      console.log(`Setting response header: ${key} = ${value}`);
     }
     
     // Send the response body
     const body = await response.text();
+    console.log(`Response body length: ${body.length} bytes`);
+    if (body.length < 1000) {
+      console.log('Response body:', body);
+    }
     res.end(body);
   } catch (error) {
     console.error('Error in API handler:', error);
