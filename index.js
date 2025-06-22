@@ -2536,3 +2536,16 @@ app.get('/timetable/:course/:semester', async (c) => {
     }, 500);
   }
 });
+
+// Export the app object for use in Vercel API handler
+export { app };
+
+// Start the server when running directly (not when imported)
+if (import.meta.url === import.meta.main) {
+  const PORT = process.env.PORT || 3000;
+  console.log(`Server starting on port ${PORT}`);
+  serve({
+    fetch: app.fetch.bind(app),
+    port: PORT
+  });
+}
