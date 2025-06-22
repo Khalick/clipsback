@@ -50,6 +50,41 @@ app.use('*', async (c, next) => {
 // Supabase Storage setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
+// Helper function for Supabase file uploads
+async function uploadFileToSupabase(file, folder, prefix = '') {
+  if (!file || !file.data) {
+    throw new Error('No file provided');
+  }
+  
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('Supabase storage not configured');
+  }
+
+  const fileName = `${folder}/${prefix}_${Date.now()}_${file.name}`;
+  
+  console.log(`Uploading ${file.name} to ${folder} bucket...`);
+  
+  const { data, error } = await supabase.storage
+    .from('student-docs')
+    .upload(fileName, file.data, { contentType: file.type });
+    
+  if (error) {
+    console.error(`Error uploading to ${folder}:`, error);
+    throw error;
+  }
+
+  // Get the public URL
+  const { data: urlData } = supabase.storage
+    .from('student-docs')
+    .getPublicUrl(fileName);
+    
+  console.log(`File uploaded successfully to ${folder}`);
+  return {
+    filePath: fileName,
+    publicUrl: urlData.publicUrl
+  };
+}
+
 // Get all students
 app.get('/students', async (c) => {
   try {
@@ -967,32 +1002,13 @@ async function handleStudentWithPhoto(c) {
       });
       
       try {
-        // Check if Supabase is properly configured
-        if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-          console.error('Supabase environment variables not set');
-          // Continue without photo instead of failing the whole request
-          console.log('Skipping photo upload due to missing storage configuration');
-        } else {
-          const fileName = `student-photos/${registration_number}_${Date.now()}_${photo.name}`;
-          
-          const { data, error } = await supabase.storage
-            .from('student-docs')
-            .upload(fileName, photo.data, { contentType: photo.type });
-            
-          if (error) {
-            console.error('Error uploading photo:', error);
-            // Continue without photo instead of failing the whole request
-            console.log('Continuing registration without photo due to upload error');
-          } else {
-            // Get the public URL
-            const { data: urlData } = supabase.storage
-              .from('student-docs')
-              .getPublicUrl(fileName);
-              
-            student_photo_url = urlData.publicUrl;
-            console.log('Photo uploaded successfully:', student_photo_url);
-          }
-        }
+        const uploadResult = await uploadFileToSupabase(
+          photo, 
+          'student-photos', 
+          registration_number
+        );
+        student_photo_url = uploadResult.publicUrl;
+        console.log('Photo uploaded successfully:', student_photo_url);
       } catch (uploadError) {
         console.error('Exception during photo upload:', uploadError);
         // Continue without photo instead of failing the whole request
@@ -1400,41 +1416,6 @@ app.get('/students/:id/fees', async (c) => {
     if (rows.length === 0) return c.json({ error: 'No fee records found for this student' }, 404);
     return c.json(rows[0]);
   } catch (error) {
-    console.error('Error fetching student fees:', error);
-    return c.json({ error: 'Failed to fetch student fees', details: error.message }, 500);
-  }
-});
-
-app.get('/fees/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM fees WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Fee not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching fee:', error);
-    return c.json({ error: 'Failed to fetch fee', details: error.message }, 500);
-  }
-});
-
-app.post('/fees', async (c) => {
-  try {
-    const data = await c.req.json();
-    const { student_id, fee_balance, total_paid, semester_fee } = data;
-    const { rows } = await pool.query(
-      'INSERT INTO fees (student_id, fee_balance, total_paid, semester_fee) VALUES ($1, $2, $3, $4) RETURNING *',
-      [student_id, fee_balance, total_paid, semester_fee]
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating fee record:', error);
-    return c.json({ error: 'Failed to create fee record', details: error.message }, 500);
-  }
-});
-
-app.put('/fees/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
     const data = await c.req.json();
     const { student_id, fee_balance, total_paid, semester_fee } = data;
     const { rows } = await pool.query(
@@ -2329,16 +2310,32 @@ app.post('/students/:id/upload-fee-statement', async (c) => {
     const studentId = c.req.param('id');
     const formData = await c.req.parseBody();
     const file = formData['file'];
-    if (!file) return c.json({ error: 'No file uploaded' }, 400);
-    const fileName = `fee-statements/${studentId}_${Date.now()}_${file.name}`;
-    const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
-    if (error) return c.json({ error: error.message }, 500);
-    const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
-    await pool.query('INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', [studentId, fileName, publicURL]);
-    return c.json({ message: 'Fee statement uploaded.', url: publicURL });
+    
+    if (!file) {
+      return c.json({ error: 'No file uploaded' }, 400);
+    }
+    
+    const uploadResult = await uploadFileToSupabase(
+      file, 
+      'fee-statements', 
+      `student_${studentId}`
+    );
+    
+    await pool.query(
+      'INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', 
+      [studentId, formData.statement || 'Fee Statement', uploadResult.publicUrl]
+    );
+    
+    return c.json({ 
+      message: 'Fee statement uploaded successfully', 
+      url: uploadResult.publicUrl 
+    });
   } catch (error) {
     console.error('Error uploading fee statement:', error);
-    return c.json({ error: 'Failed to upload fee statement', details: error.message }, 500);
+    return c.json({ 
+      error: 'Failed to upload fee statement', 
+      details: error.message 
+    }, 500);
   }
 });
 
@@ -2348,20 +2345,36 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
     const studentId = c.req.param('id');
     const formData = await c.req.parseBody();
     const file = formData['file'];
-    if (!file) return c.json({ error: 'No file uploaded' }, 400);
-    const fileName = `fee-receipts/${studentId}_${Date.now()}_${file.name}`;
-    const { data, error } = await supabase.storage.from('finance').upload(fileName, file.data, { contentType: file.type });
-    if (error) return c.json({ error: error.message }, 500);
-    const { publicURL } = supabase.storage.from('finance').getPublicUrl(fileName).data;
-    await pool.query('INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', [studentId, publicURL]);
-    return c.json({ message: 'Fee receipt uploaded.', url: publicURL });
+    
+    if (!file) {
+      return c.json({ error: 'No file uploaded' }, 400);
+    }
+    
+    const uploadResult = await uploadFileToSupabase(
+      file, 
+      'fee-receipts', 
+      `student_${studentId}`
+    );
+    
+    await pool.query(
+      'INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', 
+      [studentId, uploadResult.publicUrl]
+    );
+    
+    return c.json({ 
+      message: 'Fee receipt uploaded successfully', 
+      url: uploadResult.publicUrl 
+    });
   } catch (error) {
     console.error('Error uploading fee receipt:', error);
-    return c.json({ error: 'Failed to upload fee receipt', details: error.message }, 500);
+    return c.json({ 
+      error: 'Failed to upload fee receipt', 
+      details: error.message 
+    }, 500);
   }
 });
 
-// Upload student results with file (PDF or image)
+// Upload exam results with file (admin)
 app.post('/students/:id/upload-results', async (c) => {
   try {
     const studentId = c.req.param('id');
@@ -2384,31 +2397,20 @@ app.post('/students/:id/upload-results', async (c) => {
     
     // Handle file upload
     const file = formData.file;
-    let fileUrl = null;
     
     if (file && file.data) {
-      console.log('Results file received, uploading to storage');
-      
-      const fileName = `results/${studentId}_${semester}_${Date.now()}_${file.name}`;
-      
-      const { data, error } = await supabase.storage
-        .from('student-docs')
-        .upload(fileName, file.data, { contentType: file.type });
-        
-      if (error) {
-        console.error('Error uploading results file:', error);
-        // Continue without file if upload fails
-      } else {
-        // Get the public URL
-        const { data: urlData } = supabase.storage
-          .from('student-docs')
-          .getPublicUrl(fileName);
-          
-        fileUrl = urlData.publicUrl;
-        console.log('Results file uploaded successfully:', fileUrl);
+      try {
+        const uploadResult = await uploadFileToSupabase(
+          file, 
+          'results', 
+          `student_${studentId}_${semester}`
+        );
         
         // Add file URL to result data
-        result_data.file_url = fileUrl;
+        result_data.file_url = uploadResult.publicUrl;
+      } catch (uploadError) {
+        console.error('Error uploading results file:', uploadError);
+        // Continue without file if upload fails
       }
     }
     
@@ -2432,12 +2434,83 @@ app.post('/students/:id/upload-results', async (c) => {
   }
 });
 
-const port = process.env.PORT || 3000;
-console.log(`Server running on http://localhost:${port}`);
-serve({
-  fetch: app.fetch,
-  port: port
+// Add a new endpoint for timetable uploads
+
+app.post('/upload-timetable', async (c) => {
+  try {
+    const formData = await c.req.parseBody();
+    const file = formData['file'];
+    const course = formData['course'];
+    const semester = formData['semester'];
+    
+    if (!file) {
+      return c.json({ error: 'No file uploaded' }, 400);
+    }
+    
+    if (!course || !semester) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Course and semester are required' 
+      }, 400);
+    }
+    
+    const uploadResult = await uploadFileToSupabase(
+      file, 
+      'timetables', 
+      `${course}_${semester}`
+    );
+    
+    // Store timetable reference in database
+    const { rows } = await pool.query(
+      `INSERT INTO timetables 
+       (course, semester, timetable_url, timetable_data) 
+       VALUES ($1, $2, $3, $4) 
+       RETURNING *`,
+      [
+        course, 
+        semester, 
+        uploadResult.publicUrl, 
+        { file_path: uploadResult.filePath }
+      ]
+    );
+    
+    return c.json({ 
+      message: 'Timetable uploaded successfully', 
+      timetable: rows[0] 
+    });
+  } catch (error) {
+    console.error('Error uploading timetable:', error);
+    return c.json({ 
+      error: 'Failed to upload timetable', 
+      details: error.message 
+    }, 500);
+  }
 });
 
-// Export the app for use in api/index.js
-export { app };
+// Add an endpoint to get timetable by course and semester
+app.get('/timetable/:course/:semester', async (c) => {
+  try {
+    const course = c.req.param('course');
+    const semester = c.req.param('semester');
+    
+    const { rows } = await pool.query(
+      'SELECT * FROM timetables WHERE course = $1 AND semester = $2 ORDER BY created_at DESC LIMIT 1',
+      [course, semester]
+    );
+    
+    if (rows.length === 0) {
+      return c.json({ 
+        error: 'Timetable not found', 
+        details: 'No timetable found for this course and semester' 
+      }, 404);
+    }
+    
+    return c.json(rows[0]);
+  } catch (error) {
+    console.error('Error fetching timetable:', error);
+    return c.json({ 
+      error: 'Failed to fetch timetable', 
+      details: error.message 
+    }, 500);
+  }
+});
