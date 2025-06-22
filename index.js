@@ -2259,7 +2259,6 @@ app.post('/exam-cards', async (c) => {
     // Check if the request is multipart/form-data
     const contentType = c.req.header('content-type') || '';
     console.log('Request content-type:', contentType);
-    console.log('Full headers:', Object.fromEntries(c.req.raw.headers.entries()));
     
     let student_id;
     let file_url;
@@ -2268,20 +2267,31 @@ app.post('/exam-cards', async (c) => {
     if (contentType.includes('multipart/form-data')) {
       try {
         console.log('Processing multipart form data for exam card');
-        const formData = await c.req.parseBody();
-        console.log('Form data parsed:', Object.keys(formData));
+        const formData = await c.req.formData();
+        console.log('Form data parsed:', Array.from(formData.keys()));
         
-        student_id = formData.student_id;
-        file_url = formData.file_url;
+        student_id = formData.get('student_id');
+        file_url = formData.get('file_url');
         
         // Handle file upload if present
-        const file = formData.file;
-        if (file && file.data) {
+        const file = formData.get('file');
+        if (file && typeof file !== 'string') {
           console.log('File included in request, uploading...');
           
           try {
+            // Get file data as array buffer
+            const fileData = await file.arrayBuffer();
+            const fileName = file.name || 'exam-card.pdf';
+            const fileType = file.type || 'application/pdf';
+            
+            const fileObj = {
+              name: fileName,
+              type: fileType,
+              data: new Uint8Array(fileData)
+            };
+            
             const uploadResult = await uploadFileToSupabase(
-              file, 
+              fileObj, 
               'exam-cards', 
               `student_${student_id || 'unknown'}`
             );
@@ -2300,7 +2310,8 @@ app.post('/exam-cards', async (c) => {
         console.error('Error processing form data for exam card:', formError);
         return c.json({
           error: 'Failed to process form data',
-          details: formError.message
+          details: formError.message,
+          help: 'Make sure you are sending a properly formatted multipart/form-data request'
         }, 400);
       }
     } else {
@@ -2354,14 +2365,30 @@ app.post('/exam-cards', async (c) => {
 app.post('/students/:id/upload-exam-card', async (c) => {
   try {
     const studentId = c.req.param('id');
+    console.log('Uploading exam card for student:', studentId);
+    
+    // Parse multipart form data
     const formData = await c.req.parseBody();
-    const file = formData['file'];
-    if (!file) return c.json({ error: 'No file uploaded' }, 400);
+    console.log('Form data received:', Object.keys(formData));
+    
+    // Extract file
+    const file = formData.file;
+    if (!file) {
+      return c.json({ error: 'No file uploaded' }, 400);
+    }
+    
+    // Upload file to Supabase
     const fileName = `exam-cards/${studentId}_${Date.now()}_${file.name}`;
     const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
     if (error) return c.json({ error: error.message }, 500);
     const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
-    await pool.query('INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)', [studentId, publicURL]);
+    
+    // Update or insert exam card record in database
+    await pool.query(
+      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
+      [studentId, publicURL]
+    );
+    
     return c.json({ message: 'Exam card uploaded.', url: publicURL });
   } catch (error) {
     console.error('Error uploading exam card:', error);
