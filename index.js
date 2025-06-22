@@ -2278,15 +2278,27 @@ app.post('/exam-cards', async (c) => {
         if (file && typeof file !== 'string') {
           console.log('File included in request, uploading...');
           
+          // Validate file type - must be PDF
+          const fileType = file.type || '';
+          if (fileType !== 'application/pdf') {
+            console.error('Invalid file type for exam card:', fileType);
+            return c.json({
+              error: 'Invalid file type',
+              details: 'Only PDF files are accepted for exam cards'
+            }, 400);
+          }
+          
           try {
             // Get file data as array buffer
             const fileData = await file.arrayBuffer();
             const fileName = file.name || 'exam-card.pdf';
-            const fileType = file.type || 'application/pdf';
+            
+            // Ensure filename ends with .pdf
+            const finalFileName = fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`;
             
             const fileObj = {
-              name: fileName,
-              type: fileType,
+              name: finalFileName,
+              type: 'application/pdf',
               data: new Uint8Array(fileData)
             };
             
@@ -2407,8 +2419,22 @@ app.post('/students/registration/:regNumber/upload-exam-card', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
+    // Validate file type - must be PDF
+    const fileType = file.type || '';
+    if (fileType !== 'application/pdf') {
+      console.error('Invalid file type for exam card:', fileType);
+      return c.json({
+        error: 'Invalid file type',
+        details: 'Only PDF files are accepted for exam cards'
+      }, 400);
+    }
+    
+    // Ensure filename ends with .pdf
+    const originalName = file.name || 'exam-card.pdf';
+    const finalFileName = originalName.endsWith('.pdf') ? originalName : `${originalName}.pdf`;
+    
     // Upload file to Supabase
-    const fileName = `exam-cards/${registration_number}_${Date.now()}_${file.name}`;
+    const fileName = `exam-cards/${registration_number}_${Date.now()}_${finalFileName}`;
     const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
     if (error) return c.json({ error: error.message }, 500);
     const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
@@ -2457,8 +2483,22 @@ app.post('/students/:id/upload-exam-card', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
+    // Validate file type - must be PDF
+    const fileType = file.type || '';
+    if (fileType !== 'application/pdf') {
+      console.error('Invalid file type for exam card:', fileType);
+      return c.json({
+        error: 'Invalid file type',
+        details: 'Only PDF files are accepted for exam cards'
+      }, 400);
+    }
+    
+    // Ensure filename ends with .pdf
+    const originalName = file.name || 'exam-card.pdf';
+    const finalFileName = originalName.endsWith('.pdf') ? originalName : `${originalName}.pdf`;
+    
     // Upload file to Supabase
-    const fileName = `exam-cards/${registration_number}_${Date.now()}_${file.name}`;
+    const fileName = `exam-cards/${registration_number}_${Date.now()}_${finalFileName}`;
     const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
     if (error) return c.json({ error: error.message }, 500);
     const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
@@ -2532,8 +2572,28 @@ app.post('/students/:id/upload-fee-statement', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
+    // Validate file type - must be PDF
+    const fileType = file.type || '';
+    if (fileType !== 'application/pdf') {
+      console.error('Invalid file type for fee statement:', fileType);
+      return c.json({
+        error: 'Invalid file type',
+        details: 'Only PDF files are accepted for fee statements'
+      }, 400);
+    }
+    
+    // Ensure filename ends with .pdf
+    const originalName = file.name || 'fee-statement.pdf';
+    const finalFileName = originalName.endsWith('.pdf') ? originalName : `${originalName}.pdf`;
+    
+    // Create modified file object with corrected name
+    const pdfFile = {
+      ...file,
+      name: finalFileName
+    };
+    
     const uploadResult = await uploadFileToSupabase(
-      file, 
+      pdfFile, 
       'fee-statements', 
       `student_${studentId}`
     );
@@ -2567,8 +2627,28 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
+    // Validate file type - must be PDF
+    const fileType = file.type || '';
+    if (fileType !== 'application/pdf') {
+      console.error('Invalid file type for fee receipt:', fileType);
+      return c.json({
+        error: 'Invalid file type',
+        details: 'Only PDF files are accepted for fee receipts'
+      }, 400);
+    }
+    
+    // Ensure filename ends with .pdf
+    const originalName = file.name || 'fee-receipt.pdf';
+    const finalFileName = originalName.endsWith('.pdf') ? originalName : `${originalName}.pdf`;
+    
+    // Create modified file object with corrected name
+    const pdfFile = {
+      ...file,
+      name: finalFileName
+    };
+    
     const uploadResult = await uploadFileToSupabase(
-      file, 
+      pdfFile, 
       'fee-receipts', 
       `student_${studentId}`
     );
@@ -2604,6 +2684,47 @@ app.post('/students/:id/upload-results', async (c) => {
     // Extract metadata
     const semester = formData.semester;
     const result_data = formData.result_data ? JSON.parse(formData.result_data) : {};
+    
+    // Handle file upload if present
+    const resultFile = formData.file;
+    if (resultFile) {
+      // Validate file type - must be PDF
+      const fileType = resultFile.type || '';
+      if (fileType !== 'application/pdf') {
+        console.error('Invalid file type for result slip:', fileType);
+        return c.json({
+          error: 'Invalid file type',
+          details: 'Only PDF files are accepted for result slips'
+        }, 400);
+      }
+      
+      // Ensure filename ends with .pdf
+      const originalName = resultFile.name || 'result-slip.pdf';
+      const finalFileName = originalName.endsWith('.pdf') ? originalName : `${originalName}.pdf`;
+      
+      // Create modified file object
+      const pdfFile = {
+        ...resultFile,
+        name: finalFileName
+      };
+      
+      try {
+        const uploadResult = await uploadFileToSupabase(
+          pdfFile, 
+          'results', 
+          `student_${studentId}_${semester}`
+        );
+        
+        // Add file URL to result data
+        result_data.file_url = uploadResult.publicUrl;
+      } catch (uploadError) {
+        console.error('Error uploading results file:', uploadError);
+        return c.json({
+          error: 'Failed to upload results file',
+          details: uploadError.message
+        }, 500);
+      }
+    }
     
     if (!semester) {
       return c.json({ 
@@ -2671,8 +2792,28 @@ app.post('/upload-timetable', async (c) => {
       }, 400);
     }
     
+    // Validate file type - must be PDF
+    const fileType = file.type || '';
+    if (fileType !== 'application/pdf') {
+      console.error('Invalid file type for timetable:', fileType);
+      return c.json({
+        error: 'Invalid file type',
+        details: 'Only PDF files are accepted for timetables'
+      }, 400);
+    }
+    
+    // Ensure filename ends with .pdf
+    const originalName = file.name || 'timetable.pdf';
+    const finalFileName = originalName.endsWith('.pdf') ? originalName : `${originalName}.pdf`;
+    
+    // Create modified file object with corrected name
+    const pdfFile = {
+      ...file,
+      name: finalFileName
+    };
+    
     const uploadResult = await uploadFileToSupabase(
-      file, 
+      pdfFile, 
       'timetables', 
       `${course}_${semester}`
     );
