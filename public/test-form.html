@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Student Registration Form</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, select {
+            width: 100%;
+            padding: 8px;
+            box-sizing: border-box;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .response {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>Test Student Registration Form</h1>
+    <p>This form will help test the multipart/form-data handling on the server.</p>
+
+    <form id="studentForm">
+        <div class="form-group">
+            <label for="registration_number">Registration Number*</label>
+            <input type="text" id="registration_number" name="registration_number" required>
+        </div>
+        <div class="form-group">
+            <label for="name">Name*</label>
+            <input type="text" id="name" name="name" required>
+        </div>
+        <div class="form-group">
+            <label for="course">Course*</label>
+            <input type="text" id="course" name="course" required>
+        </div>
+        <div class="form-group">
+            <label for="level_of_study">Level of Study*</label>
+            <input type="text" id="level_of_study" name="level_of_study" required>
+        </div>
+        <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email">
+        </div>
+        <div class="form-group">
+            <label for="national_id">National ID</label>
+            <input type="text" id="national_id" name="national_id">
+        </div>
+        <div class="form-group">
+            <label for="birth_certificate">Birth Certificate</label>
+            <input type="text" id="birth_certificate" name="birth_certificate">
+        </div>
+        <div class="form-group">
+            <label for="date_of_birth">Date of Birth</label>
+            <input type="date" id="date_of_birth" name="date_of_birth">
+        </div>
+        <div class="form-group">
+            <label for="photo">Photo</label>
+            <input type="file" id="photo" name="photo" accept="image/*">
+        </div>
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" name="password">
+        </div>
+        <button type="submit">Submit</button>
+    </form>
+
+    <div class="response" id="response" style="display: none;">
+        <h3>Server Response:</h3>
+        <pre id="responseData"></pre>
+    </div>
+
+    <script>
+        document.getElementById('studentForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            // Create FormData object
+            const formData = new FormData(this);
+            
+            // Display what's in the FormData (for debugging)
+            console.log('FormData contents:');
+            for (const pair of formData.entries()) {
+                console.log(pair[0] + ': ' + pair[1]);
+            }
+
+            // Send the request
+            try {
+                const response = await fetch('/students', {
+                    method: 'POST',
+                    body: formData,
+                    // Do not set Content-Type header - browser will set it correctly with boundary
+                });
+                
+                console.log('Response status:', response.status);
+                
+                // Parse and display the response
+                const responseText = await response.text();
+                console.log('Raw response:', responseText);
+                
+                try {
+                    const data = JSON.parse(responseText);
+                    document.getElementById('responseData').textContent = JSON.stringify(data, null, 2);
+                } catch (e) {
+                    document.getElementById('responseData').textContent = responseText;
+                }
+                
+                document.getElementById('response').style.display = 'block';
+            } catch (error) {
+                console.error('Error submitting form:', error);
+                document.getElementById('responseData').textContent = 'Error: ' + error.message;
+                document.getElementById('response').style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>

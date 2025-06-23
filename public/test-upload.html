@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Upload Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        form {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 5px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        input[type="text"], input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <h1>Student Registration Form</h1>
+    <p>Test file upload with Hono's parseBody (multipart/form-data)</p>
+    
+    <form id="uploadForm">
+        <div class="form-group">
+            <label for="registration_number">Registration Number*</label>
+            <input type="text" id="registration_number" name="registration_number" required>
+        </div>
+        <div class="form-group">
+            <label for="name">Full Name*</label>
+            <input type="text" id="name" name="name" required>
+        </div>
+        <div class="form-group">
+            <label for="course">Course*</label>
+            <input type="text" id="course" name="course" required>
+        </div>
+        <div class="form-group">
+            <label for="level_of_study">Level of Study*</label>
+            <input type="text" id="level_of_study" name="level_of_study" required>
+        </div>
+        <div class="form-group">
+            <label for="photo">Student Photo</label>
+            <input type="file" id="photo" name="photo" accept="image/*">
+        </div>
+        <button type="submit">Register Student</button>
+    </form>
+    
+    <div id="result"></div>
+    
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const resultDiv = document.getElementById('result');
+            resultDiv.style.display = 'block';
+            resultDiv.textContent = 'Submitting...';
+            
+            try {
+                const formData = new FormData(event.target);
+                
+                // Log the content of FormData for debugging
+                console.log('FormData contents:');
+                for (const [key, value] of formData.entries()) {
+                    console.log(`${key}: ${value instanceof File ? `File: ${value.name}` : value}`);
+                }
+                
+                const response = await fetch('/students', {
+                    method: 'POST',
+                    body: formData
+                    // Don't set Content-Type header - browser will set it correctly with boundary
+                });
+                
+                const responseText = await response.text();
+                let formattedResponse;
+                
+                try {
+                    // Try to parse as JSON
+                    const jsonResponse = JSON.parse(responseText);
+                    formattedResponse = JSON.stringify(jsonResponse, null, 2);
+                } catch (e) {
+                    // If not JSON, use raw text
+                    formattedResponse = responseText;
+                }
+                
+                resultDiv.innerHTML = `
+                    <h3>Server Response (Status: ${response.status}):</h3>
+                    <pre>${formattedResponse}</pre>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `
+                    <h3>Error:</h3>
+                    <pre>${error.message}</pre>
+                `;
+                console.error('Form submission error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

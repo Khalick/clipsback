@@ -7,7 +7,19 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 import { serveStatic } from '@hono/node-server/serve-static';
 
-const app = new Hono();
+const app = new Hono({
+  // Add proper parsing configuration for multipart/form-data
+  parseBody: {
+    formData: {
+      // Increase limit to handle larger file uploads
+      limit: '10mb',
+    },
+    // Handle JSON data type as well
+    json: {
+      limit: '1mb',
+    }
+  }
+});
 
 // SINGLE CORS configuration
 app.use('*', cors({
@@ -33,26 +45,56 @@ app.use('*', cors({
   maxAge: 86400 // Cache preflight for 24 hours
 }));
 
-// Log every request
+// Enhanced request logging middleware
 app.use('*', async (c, next) => {
   console.log(`[${new Date().toISOString()}] ${c.req.method} ${c.req.path}`);
   console.log('Origin:', c.req.header('origin'));
-  console.log('Headers:', Object.fromEntries(c.req.raw.headers.entries()));
+  
+  // Full headers logging for debugging
+  const headers = Object.fromEntries(c.req.raw.headers.entries());
+  console.log('Headers:', headers);
+  
+  // Special handling for content-type to debug multipart form issues
+  if (headers['content-type']) {
+    console.log('Content-Type details:', headers['content-type']);
+    if (headers['content-type'].includes('multipart/form-data')) {
+      console.log('Detected multipart/form-data request');
+      // Check if content-type has proper boundary
+      if (!headers['content-type'].includes('boundary=')) {
+        console.warn('Warning: multipart/form-data missing boundary parameter!');
+      }
+    }
+  }
   
   try {
     await next();
   } catch (err) {
     console.error('Global error handler:', err);
-    return c.json({ error: 'Internal Server Error', details: err.message }, 500);
+    console.error('Error stack:', err.stack);
+    return c.json({ 
+      error: 'Internal Server Error', 
+      details: err.message,
+      path: c.req.path,
+      method: c.req.method,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    }, 500);
   }
+});
+
+// Serve static files from the public directory
+app.use('/test', serveStatic({ root: './public' }));
+
+// Add specific routes for testing
+app.get('/test-upload', (c) => {
+  return c.redirect('/test/test-upload.html');
 });
 
 // Supabase Storage setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// Helper function for Supabase file uploads
+// Helper function for Supabase file uploads with support for both File and custom objects
 async function uploadFileToSupabase(file, folder, prefix = '') {
-  if (!file || !file.data) {
+  if (!file) {
     throw new Error('No file provided');
   }
   
@@ -60,13 +102,30 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
     throw new Error('Supabase storage not configured');
   }
 
-  const fileName = `${folder}/${prefix}_${Date.now()}_${file.name}`;
+  // Get file data based on what format we received
+  let fileData, fileName, fileType;
   
-  console.log(`Uploading ${file.name} to ${folder} bucket...`);
+  if (file instanceof File) {
+    // Standard File object from Hono
+    fileData = await file.arrayBuffer();
+    fileName = file.name;
+    fileType = file.type;
+  } else if (file.data) {
+    // Custom object with data property
+    fileData = file.data;
+    fileName = file.name;
+    fileType = file.type;
+  } else {
+    throw new Error('Invalid file format provided');
+  }
+
+  const uploadPath = `${folder}/${prefix}_${Date.now()}_${fileName}`;
+  
+  console.log(`Uploading ${fileName} to ${folder} bucket...`);
   
   const { data, error } = await supabase.storage
     .from('student-docs')
-    .upload(fileName, file.data, { contentType: file.type });
+    .upload(uploadPath, fileData, { contentType: fileType });
     
   if (error) {
     console.error(`Error uploading to ${folder}:`, error);
@@ -76,11 +135,11 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
   // Get the public URL
   const { data: urlData } = supabase.storage
     .from('student-docs')
-    .getPublicUrl(fileName);
+    .getPublicUrl(uploadPath);
     
   console.log(`File uploaded successfully to ${folder}`);
   return {
-    filePath: fileName,
+    filePath: uploadPath,
     publicUrl: urlData.publicUrl
   };
 }
@@ -943,10 +1002,43 @@ async function handleStudentWithPhoto(c) {
     console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()));
     
     try {
-      // Parse the multipart form data with error handling
+      // Parse the multipart form data based on Hono documentation
       console.log('Attempting to parse form data...');
-      formData = await c.req.parseBody();
-      console.log('Form data successfully parsed, keys:', Object.keys(formData));
+      console.log('Content-Type header details:', c.req.header('content-type'));
+      
+      // Use simple parseBody with proper error handling
+      try {
+        // According to Hono docs, this is all we need for file uploads
+        formData = await c.req.parseBody();
+        console.log('Form data successfully parsed, keys:', Object.keys(formData));
+        
+        // Debug logging for file keys
+        Object.keys(formData).forEach(key => {
+          const value = formData[key];
+          if (value instanceof File || (value && value.name && value.type)) {
+            console.log(`File field detected: ${key}`, { 
+              name: value.name, 
+              type: value.type, 
+              size: value.size || (value.data ? value.data.length : 'unknown') 
+            });
+          } else {
+            console.log(`Form field: ${key} = ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+          }
+        });
+      } catch (parseError) {
+        console.error('Detailed parse error:', parseError);
+        
+        // Try standard formData() method as a fallback
+        try {
+          console.log('Trying alternative formData() method...');
+          const rawFormData = await c.req.formData();
+          formData = Object.fromEntries(rawFormData);
+          console.log('Used formData() method instead, keys:', Object.keys(formData));
+        } catch (altError) {
+          console.error('Alternative form parsing also failed:', altError);
+          throw new Error(`Form parsing failed: ${parseError.message}. Alternative method also failed: ${altError.message}`);
+        }
+      }
       
       // Extract student data with additional validation
       registration_number = formData.registration_number || '';
@@ -993,17 +1085,41 @@ async function handleStudentWithPhoto(c) {
     // Handle photo upload if provided (optional)
     const photo = formData.photo;
     
-    if (photo && photo.data) {
+    if (photo) {
       console.log('Photo received, uploading to storage');
-      console.log('Photo details:', {
-        name: photo.name,
-        type: photo.type,
-        size: photo.data.length
-      });
+      
+      // Handle both Hono File object or our custom object structure
+      let fileToUpload;
+      
+      if (photo instanceof File) {
+        // Hono provides standard File objects
+        console.log('Photo details (standard File):', {
+          name: photo.name,
+          type: photo.type,
+          size: photo.size
+        });
+        fileToUpload = {
+          name: photo.name,
+          type: photo.type,
+          // Convert File to array buffer then to buffer for Supabase
+          data: await photo.arrayBuffer()
+        };
+      } else if (photo.data) {
+        // Support legacy format as well
+        console.log('Photo details (legacy format):', {
+          name: photo.name,
+          type: photo.type,
+          size: photo.data.length
+        });
+        fileToUpload = photo;
+      } else {
+        console.log('Unknown photo format:', photo);
+        throw new Error('Invalid photo format received');
+      }
       
       try {
         const uploadResult = await uploadFileToSupabase(
-          photo, 
+          fileToUpload, 
           'student-photos', 
           registration_number
         );
@@ -2016,6 +2132,7 @@ app.get('/api/health', async (c) => {
     uptime: process.uptime(),
     timestamp: Date.now(),
     environment: process.env.NODE_ENV || 'development'
+ 
   };
   
   try {
@@ -2735,12 +2852,15 @@ app.get('/timetable/:course/:semester', async (c) => {
 // Export the app object for use in Vercel API handler
 export { app };
 
-// Start the server when running directly (not when imported)
-if (import.meta.url === import.meta.main) {
-  const PORT = process.env.PORT || 3000;
-  console.log(`Server starting on port ${PORT}`);
-  serve({
-    fetch: app.fetch.bind(app),
-    port: PORT
-  });
-}
+// Start the server when running directly
+// In Node.js, import.meta.url is available but import.meta.main is not
+// So we check if the file being run is the current file
+const isDirectRun = process.argv[1] === import.meta.url || process.argv[1] === 'index.js' || process.argv[1].endsWith('/index.js') || process.argv[1].endsWith('\\index.js');
+
+// Always start the server unless explicitly importing it elsewhere
+const PORT = process.env.PORT || 3000;
+console.log(`Server starting on port ${PORT}`);
+serve({
+  fetch: app.fetch.bind(app),
+  port: PORT
+});
