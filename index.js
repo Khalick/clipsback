@@ -89,6 +89,10 @@ app.get('/test-upload', (c) => {
   return c.redirect('/test/test-upload.html');
 });
 
+app.get('/test-exam-card', (c) => {
+  return c.redirect('/test/test-exam-card.html');
+});
+
 // Supabase Storage setup
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -2401,10 +2405,10 @@ app.post('/exam-cards', async (c) => {
     let registration_number;
     let file_url;
     
-    // Handle multipart/form-data (with possible file upload)
+    // Handle multipart/form-data (file upload first)
     if (contentType.includes('multipart/form-data')) {
       try {
-        console.log('Processing multipart form data for exam card');
+        console.log('Processing multipart form data for file upload');
         const formData = await c.req.formData();
         console.log('Form data parsed with formData():', [...formData.keys()]);
         
@@ -2417,7 +2421,6 @@ app.post('/exam-cards', async (c) => {
         }
         
         registration_number = formData.get('registration_number');
-        file_url = formData.get('file_url');
         
         // Validate required fields
         if (!registration_number) {
@@ -2427,7 +2430,7 @@ app.post('/exam-cards', async (c) => {
           }, 400);
         }
         
-        // Handle file upload if present
+        // Handle file upload - upload to Supabase first, then return URL
         const file = formData.get('file');
         console.log('File detection debug:', {
           file: file ? 'present' : 'missing',
@@ -2438,7 +2441,7 @@ app.post('/exam-cards', async (c) => {
         });
         
         if (file && file instanceof File && file.size > 0) {
-          console.log('File included in request, uploading...');
+          console.log('File included in request, uploading to Supabase...');
           console.log('File details:', {
             name: file.name,
             type: file.type,
@@ -2454,14 +2457,50 @@ app.post('/exam-cards', async (c) => {
               data: new Uint8Array(fileData)
             };
             
-            const uploadResult = await uploadFileToSupabase(
-              fileObj, 
-              'exam_cards', 
-              `${registration_number || 'unknown'}`
-            );
+            // Upload to Supabase with custom expiry (e.g., 1 year = 31536000 seconds)
+            const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
             
-            file_url = uploadResult.publicUrl;
-            console.log('File uploaded successfully:', file_url);
+            console.log(`Uploading ${file.name} to exam_cards folder in clipstech bucket...`);
+            
+            const { data, error } = await supabase.storage
+              .from('clipstech')
+              .upload(uploadPath, fileObj.data, { 
+                contentType: file.type,
+                cacheControl: '31536000' // 1 year cache
+              });
+              
+            if (error) {
+              console.error(`Error uploading to exam_cards:`, error);
+              throw error;
+            }
+
+            // Get the public URL with custom expiry (1 year from now)
+            const expiresIn = 31536000; // 1 year in seconds
+            const { data: urlData, error: urlError } = await supabase.storage
+              .from('clipstech')
+              .createSignedUrl(uploadPath, expiresIn);
+              
+            if (urlError) {
+              console.error('Error creating signed URL:', urlError);
+              // Fallback to public URL if signed URL fails
+              const { data: publicUrlData } = supabase.storage
+                .from('clipstech')
+                .getPublicUrl(uploadPath);
+              file_url = publicUrlData.publicUrl;
+            } else {
+              file_url = urlData.signedUrl;
+            }
+            
+            console.log('File uploaded successfully with custom expiry:', file_url);
+            
+            // Return just the file URL for frontend to use in second request
+            return c.json({
+              message: 'File uploaded successfully',
+              file_url: file_url,
+              registration_number: registration_number,
+              note: 'Use these values to save the exam card record to database'
+            });
+            
           } catch (uploadError) {
             console.error('Error uploading file for exam card:', uploadError);
             return c.json({
@@ -2469,14 +2508,10 @@ app.post('/exam-cards', async (c) => {
               details: uploadError.message
             }, 500);
           }
-        } else if (!file_url) {
+        } else {
           return c.json({
-            error: 'Missing file or file URL',
-            details: 'Either upload a file or provide a file URL',
-            debug: process.env.NODE_ENV === 'development' ? {
-              received_file: file ? `file object present, size: ${file.size || 'unknown'}` : 'no file',
-              received_file_url: file_url || 'no file_url'
-            } : undefined
+            error: 'Missing file',
+            details: 'A file is required for exam card upload'
           }, 400);
         }
       } catch (formError) {
@@ -2490,7 +2525,7 @@ app.post('/exam-cards', async (c) => {
         return c.json({
           error: 'Failed to process form data',
           details: formError.message,
-          help: 'Make sure you are sending a properly formatted multipart/form-data request with registration_number and either a file or file_url field',
+          help: 'Make sure you are sending a properly formatted multipart/form-data request with registration_number and file',
           debug: process.env.NODE_ENV === 'development' ? {
             errorName: formError.name,
             contentType: contentType,
@@ -2499,36 +2534,213 @@ app.post('/exam-cards', async (c) => {
         }, 400);
       }
     } else {
-      // Handle standard JSON request
+      // Handle JSON request to save exam card record to database
       try {
         const data = await c.req.json();
-        console.log('Creating new exam card from JSON data:', data);
+        console.log('Saving exam card record to database:', data);
         
         registration_number = data.registration_number;
         file_url = data.file_url;
+        
+        // Validate required fields
+        if (!registration_number || !file_url) {
+          return c.json({ 
+            error: 'Missing required fields', 
+            details: 'Registration number and file URL are required',
+            received: {
+              registration_number: registration_number || 'missing',
+              file_url: file_url || 'missing'
+            }
+          }, 400);
+        }
+        
+        // Validate registration number format
+        if (typeof registration_number !== 'string' || registration_number.trim().length === 0) {
+          return c.json({
+            error: 'Invalid registration number',
+            details: 'Registration number must be a non-empty string'
+          }, 400);
+        }
+        
+        // Validate file URL format
+        if (typeof file_url !== 'string' || file_url.trim().length === 0) {
+          return c.json({
+            error: 'Invalid file URL',
+            details: 'File URL must be a non-empty string'
+          }, 400);
+        }
+        
+        // Get student_id from registration_number
+        const studentResult = await pool.query(
+          'SELECT id FROM students WHERE registration_number = $1',
+          [registration_number.trim()]
+        );
+        
+        if (studentResult.rows.length === 0) {
+          return c.json({ 
+            error: 'Student not found', 
+            details: 'No student found with the provided registration number' 
+          }, 404);
+        }
+        
+        const student_id = studentResult.rows[0].id;
+        
+        console.log('Inserting exam card in database:', { registration_number, student_id, file_url });
+        
+        const { rows } = await pool.query(
+          'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) RETURNING *',
+          [student_id, file_url]
+        );
+        
+        return c.json({ 
+          message: 'Exam card record saved to database successfully', 
+          exam_card: rows[0] 
+        });
+        
       } catch (jsonError) {
         console.error('Error parsing JSON for exam card:', jsonError);
         return c.json({
           error: 'Invalid JSON data',
           details: jsonError.message,
-          message: 'Make sure you are sending a valid JSON body with the correct content-type header'
+          message: 'Make sure you are sending a valid JSON body with registration_number and file_url'
         }, 400);
       }
     }
+  } catch (error) {
+    console.error('Error processing exam card request:', error);
+    return c.json({ 
+      error: 'Failed to process exam card request', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
+  }
+});
+
+// Dedicated file upload endpoint for exam cards
+app.post('/exam-cards/upload', async (c) => {
+  try {
+    console.log('POST /exam-cards/upload request received - file upload only');
     
-    // Validate required fields after processing both multipart and JSON requests
-    if (!registration_number || !file_url) {
-      return c.json({ 
-        error: 'Missing required fields', 
-        details: 'Registration number and file URL are required',
-        received: {
-          registration_number: registration_number || 'missing',
-          file_url: file_url || 'missing'
-        }
+    // Check if the request is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
+    
+    if (!contentType.includes('multipart/form-data')) {
+      return c.json({
+        error: 'Invalid content type',
+        details: 'This endpoint requires multipart/form-data for file uploads'
       }, 400);
     }
     
-    // Validate registration number format (basic validation)
+    try {
+      const formData = await c.req.formData();
+      console.log('Form data parsed:', [...formData.keys()]);
+      
+      const registration_number = formData.get('registration_number');
+      const file = formData.get('file');
+      
+      // Validate required fields
+      if (!registration_number) {
+        return c.json({
+          error: 'Missing registration number',
+          details: 'Registration number is required for file upload'
+        }, 400);
+      }
+      
+      if (!file || !file instanceof File || file.size === 0) {
+        return c.json({
+          error: 'Missing or invalid file',
+          details: 'A valid file is required'
+        }, 400);
+      }
+      
+      console.log('Uploading file:', {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        registration_number
+      });
+      
+      // Upload file to Supabase with custom expiry
+      const fileData = await file.arrayBuffer();
+      const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
+      
+      const { data, error } = await supabase.storage
+        .from('clipstech')
+        .upload(uploadPath, fileData, { 
+          contentType: file.type,
+          cacheControl: '31536000' // 1 year cache
+        });
+        
+      if (error) {
+        console.error('Supabase upload error:', error);
+        return c.json({
+          error: 'Failed to upload file',
+          details: error.message
+        }, 500);
+      }
+      
+      // Create signed URL with custom expiry (1 year)
+      const expiresIn = 31536000; // 1 year in seconds
+      const { data: urlData, error: urlError } = await supabase.storage
+        .from('clipstech')
+        .createSignedUrl(uploadPath, expiresIn);
+        
+      let file_url;
+      if (urlError) {
+        console.error('Error creating signed URL, using public URL:', urlError);
+        const { data: publicUrlData } = supabase.storage
+          .from('clipstech')
+          .getPublicUrl(uploadPath);
+        file_url = publicUrlData.publicUrl;
+      } else {
+        file_url = urlData.signedUrl;
+      }
+      
+      console.log('File uploaded successfully:', file_url);
+      
+      return c.json({
+        message: 'File uploaded successfully',
+        file_url: file_url,
+        registration_number: registration_number,
+        upload_path: uploadPath,
+        expires_in_seconds: expiresIn,
+        note: 'Use the file_url and registration_number to save the exam card record'
+      });
+      
+    } catch (uploadError) {
+      console.error('Error during file upload:', uploadError);
+      return c.json({
+        error: 'File upload failed',
+        details: uploadError.message
+      }, 500);
+    }
+  } catch (error) {
+    console.error('Error in file upload endpoint:', error);
+    return c.json({
+      error: 'Upload endpoint error',
+      details: error.message
+    }, 500);
+  }
+});
+
+// Save exam card record to database (after file upload)
+app.post('/exam-cards/save', async (c) => {
+  try {
+    console.log('POST /exam-cards/save request received - save record only');
+    
+    const data = await c.req.json();
+    const { registration_number, file_url } = data;
+    
+    // Validate required fields
+    if (!registration_number || !file_url) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Both registration_number and file_url are required'
+      }, 400);
+    }
+    
+    // Validate field formats
     if (typeof registration_number !== 'string' || registration_number.trim().length === 0) {
       return c.json({
         error: 'Invalid registration number',
@@ -2536,7 +2748,6 @@ app.post('/exam-cards', async (c) => {
       }, 400);
     }
     
-    // Validate file URL format (basic validation)
     if (typeof file_url !== 'string' || file_url.trim().length === 0) {
       return c.json({
         error: 'Invalid file URL',
@@ -2559,23 +2770,28 @@ app.post('/exam-cards', async (c) => {
     
     const student_id = studentResult.rows[0].id;
     
-    console.log('Inserting exam card in database:', { registration_number, student_id, file_url });
+    console.log('Saving exam card record to database:', { 
+      registration_number: registration_number.trim(), 
+      student_id, 
+      file_url: file_url.trim() 
+    });
     
+    // Insert or update exam card record in database
     const { rows } = await pool.query(
-      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) RETURNING *',
-      [student_id, file_url]
+      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url RETURNING *',
+      [student_id, file_url.trim()]
     );
     
     return c.json({ 
-      message: 'Exam card created successfully', 
+      message: 'Exam card record saved successfully', 
       exam_card: rows[0] 
     });
+    
   } catch (error) {
-    console.error('Error creating exam card:', error);
+    console.error('Error saving exam card record:', error);
     return c.json({ 
-      error: 'Failed to create exam card', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: 'Failed to save exam card record', 
+      details: error.message 
     }, 500);
   }
 });
