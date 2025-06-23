@@ -1262,52 +1262,44 @@ app.put('/students/:id', async (c) => {
     if (contentType.includes('multipart/form-data')) {
       try {
         console.log('Processing multipart form data for student update');
-        const formData = await c.req.parseBody();
+        const formData = await c.req.formData();
         
         // Extract form fields
         data = {
-          registration_number: formData.registration_number,
-          name: formData.name,
-          course: formData.course,
-          level_of_study: formData.level_of_study,
-          national_id: formData.national_id,
-          birth_certificate: formData.birth_certificate,
-          date_of_birth: formData.date_of_birth,
-          password: formData.password,
-          email: formData.email
+          registration_number: formData.get('registration_number'),
+          name: formData.get('name'),
+          course: formData.get('course'),
+          level_of_study: formData.get('level_of_study'),
+          national_id: formData.get('national_id'),
+          birth_certificate: formData.get('birth_certificate'),
+          date_of_birth: formData.get('date_of_birth'),
+          password: formData.get('password'),
+          email: formData.get('email')
         };
         
         // Handle photo if present (optional)
-        const photo = formData.photo;
-        if (photo && photo.data) {
+        const photo = formData.get('photo');
+        if (photo && typeof photo !== 'string' && photo.size > 0) {
           console.log('Photo included in update, uploading...');
           
           try {
-            // Check if Supabase is properly configured
-            if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-              console.error('Supabase environment variables not set');
-              console.log('Skipping photo upload due to missing storage configuration');
-            } else {
-              const fileName = `Student_photos/${data.registration_number || id}_${Date.now()}_${photo.name}`;
-              
-              const { data: uploadData, error } = await supabase.storage
-                .from('clipstech')
-                .upload(fileName, photo.data, { contentType: photo.type });
-                
-              if (error) {
-                console.error('Error uploading photo during update:', error);
-                console.log('Continuing update without changing photo due to upload error');
-              } else {
-                // Get the public URL
-                const { data: urlData } = supabase.storage
-                  .from('clipstech')
-                  .getPublicUrl(fileName);
-                  
-                update_photo_url = urlData.publicUrl;
-                // Don't modify data.photo_url directly since we've already destructured it
-                console.log('Photo updated successfully:', update_photo_url);
-              }
-            }
+            // Convert File to our expected format
+            const fileData = await photo.arrayBuffer();
+            const fileObj = {
+              name: photo.name,
+              type: photo.type,
+              data: new Uint8Array(fileData)
+            };
+            
+            // Upload using our helper function
+            const uploadResult = await uploadFileToSupabase(
+              fileObj, 
+              'Student_photos', 
+              data.registration_number || id
+            );
+            
+            update_photo_url = uploadResult.publicUrl;
+            console.log('Photo updated successfully:', update_photo_url);
           } catch (uploadError) {
             console.error('Exception during photo upload in update:', uploadError);
             console.log('Continuing update without changing photo due to exception');
