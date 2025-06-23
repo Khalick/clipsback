@@ -115,7 +115,7 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
   });
   
   if (file instanceof File) {
-    // Standard File object from Hono
+    // Standard File object from formData()
     fileData = await file.arrayBuffer();
     fileName = file.name;
     fileType = file.type;
@@ -126,26 +126,26 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
     fileName = file.name;
     fileType = file.type;
     console.log('Using data property method');
-  } else if (file.size && file.stream) {
-    // Handle File-like objects that might have stream property
+  } else if (file.size && typeof file.arrayBuffer === 'function') {
+    // Handle File-like objects that might have arrayBuffer method
     try {
       fileData = await file.arrayBuffer();
       fileName = file.name;
       fileType = file.type;
-      console.log('Using stream/arrayBuffer method');
+      console.log('Using arrayBuffer method');
     } catch (streamError) {
-      console.error('Error reading file stream:', streamError);
-      throw new Error('Failed to read file data from stream');
+      console.error('Error reading file arrayBuffer:', streamError);
+      throw new Error('Failed to read file data from arrayBuffer');
     }
   } else {
     console.error('Invalid file format:', {
       hasData: !!file.data,
       hasSize: !!file.size,
-      hasStream: !!file.stream,
       hasArrayBuffer: typeof file.arrayBuffer === 'function',
-      keys: Object.keys(file)
+      isFileInstance: file instanceof File,
+      keys: typeof file === 'object' ? Object.keys(file) : 'not an object'
     });
-    throw new Error('Invalid file format provided - file must have data property, be a File instance, or have arrayBuffer method');
+    throw new Error('Invalid file format provided - file must be a File instance, have data property, or have arrayBuffer method');
   }
 
   const uploadPath = `${folder}/${prefix}_${Date.now()}_${fileName}`;
@@ -2405,19 +2405,19 @@ app.post('/exam-cards', async (c) => {
     if (contentType.includes('multipart/form-data')) {
       try {
         console.log('Processing multipart form data for exam card');
-        const formData = await c.req.parseBody();
-        console.log('Form data parsed with parseBody:', Object.keys(formData));
+        const formData = await c.req.formData();
+        console.log('Form data parsed with formData():', [...formData.keys()]);
         
         // Validate form data
-        if (!formData || typeof formData !== 'object') {
+        if (!formData) {
           return c.json({
             error: 'Invalid form data',
             details: 'Failed to parse multipart form data properly'
           }, 400);
         }
         
-        registration_number = formData.registration_number;
-        file_url = formData.file_url;
+        registration_number = formData.get('registration_number');
+        file_url = formData.get('file_url');
         
         // Validate required fields
         if (!registration_number) {
@@ -2428,27 +2428,34 @@ app.post('/exam-cards', async (c) => {
         }
         
         // Handle file upload if present
-        const file = formData.file;
+        const file = formData.get('file');
         console.log('File detection debug:', {
           file: file ? 'present' : 'missing',
-          hasData: file && file.data ? 'yes' : 'no',
           hasSize: file && file.size ? `${file.size} bytes` : 'no size',
           fileType: file ? typeof file : 'N/A',
-          fileKeys: file && typeof file === 'object' ? Object.keys(file) : 'N/A'
+          fileName: file && file.name ? file.name : 'no name',
+          isFile: file instanceof File
         });
         
-        if (file && (file.data || (file.size && file.size > 0) || file instanceof File)) {
+        if (file && file instanceof File && file.size > 0) {
           console.log('File included in request, uploading...');
           console.log('File details:', {
             name: file.name,
             type: file.type,
-            size: file.size || (file.data ? file.data.length : 'unknown'),
-            constructor: file.constructor ? file.constructor.name : 'unknown'
+            size: file.size
           });
           
           try {
+            // Convert File to our expected format for uploadFileToSupabase
+            const fileData = await file.arrayBuffer();
+            const fileObj = {
+              name: file.name,
+              type: file.type,
+              data: new Uint8Array(fileData)
+            };
+            
             const uploadResult = await uploadFileToSupabase(
-              file, 
+              fileObj, 
               'exam_cards', 
               `${registration_number || 'unknown'}`
             );
@@ -2467,7 +2474,7 @@ app.post('/exam-cards', async (c) => {
             error: 'Missing file or file URL',
             details: 'Either upload a file or provide a file URL',
             debug: process.env.NODE_ENV === 'development' ? {
-              received_file: file ? 'file object present but invalid' : 'no file',
+              received_file: file ? `file object present, size: ${file.size || 'unknown'}` : 'no file',
               received_file_url: file_url || 'no file_url'
             } : undefined
           }, 400);
@@ -2595,18 +2602,26 @@ app.post('/students/registration/:regNumber/upload-exam-card', async (c) => {
     const student_id = studentResult.rows[0].id;
     
     // Parse multipart form data
-    const formData = await c.req.parseBody();
-    console.log('Form data received:', Object.keys(formData));
+    const formData = await c.req.formData();
+    console.log('Form data received:', [...formData.keys()]);
     
     // Extract file
-    const file = formData.file;
+    const file = formData.get('file');
     if (!file) {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
+    // Convert File to our expected format for uploadFileToSupabase
+    const fileData = await file.arrayBuffer();
+    const fileObj = {
+      name: file.name,
+      type: file.type,
+      data: new Uint8Array(fileData)
+    };
+    
     // Upload file to Supabase using the helper function
     const uploadResult = await uploadFileToSupabase(
-      file, 
+      fileObj, 
       'exam_cards', 
       registration_number
     );
@@ -2646,18 +2661,26 @@ app.post('/students/:id/upload-exam-card', async (c) => {
     const registration_number = studentResult.rows[0].registration_number;
     
     // Parse multipart form data
-    const formData = await c.req.parseBody();
-    console.log('Form data received:', Object.keys(formData));
+    const formData = await c.req.formData();
+    console.log('Form data received:', [...formData.keys()]);
     
     // Extract file
-    const file = formData.file;
+    const file = formData.get('file');
     if (!file) {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
+    // Convert File to our expected format for uploadFileToSupabase
+    const fileData = await file.arrayBuffer();
+    const fileObj = {
+      name: file.name,
+      type: file.type,
+      data: new Uint8Array(fileData)
+    };
+    
     // Upload file to Supabase using the helper function
     const uploadResult = await uploadFileToSupabase(
-      file, 
+      fileObj, 
       'exam_cards', 
       registration_number
     );
