@@ -32,11 +32,11 @@ app.post('/students/with-photo', async (c) => {
     
     if (photo && photo.data) {
       console.log('Photo received, uploading to storage');
-      const fileName = `student-photos/${registration_number}_${Date.now()}_${photo.name}`;
+      const fileName = `Student_photos/${registration_number}_${Date.now()}_${photo.name}`;
       
       try {
         const { data, error } = await supabase.storage
-          .from('student-docs')
+          .from('clipstech')
           .upload(fileName, photo.data, { contentType: photo.type });
           
         if (error) {
@@ -46,7 +46,7 @@ app.post('/students/with-photo', async (c) => {
         
         // Get the public URL
         const { data: urlData } = supabase.storage
-          .from('student-docs')
+          .from('clipstech')
           .getPublicUrl(fileName);
           
         photo_url = urlData.publicUrl;

@@ -121,10 +121,10 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
 
   const uploadPath = `${folder}/${prefix}_${Date.now()}_${fileName}`;
   
-  console.log(`Uploading ${fileName} to ${folder} bucket...`);
+  console.log(`Uploading ${fileName} to ${folder} folder in clipstech bucket...`);
   
   const { data, error } = await supabase.storage
-    .from('student-docs')
+    .from('clipstech')
     .upload(uploadPath, fileData, { contentType: fileType });
     
   if (error) {
@@ -134,10 +134,10 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
 
   // Get the public URL
   const { data: urlData } = supabase.storage
-    .from('student-docs')
+    .from('clipstech')
     .getPublicUrl(uploadPath);
     
-  console.log(`File uploaded successfully to ${folder}`);
+  console.log(`File uploaded successfully to ${folder} folder`);
   return {
     filePath: uploadPath,
     publicUrl: urlData.publicUrl
@@ -1120,7 +1120,7 @@ async function handleStudentWithPhoto(c) {
       try {
         const uploadResult = await uploadFileToSupabase(
           fileToUpload, 
-          'student-photos', 
+          'Student_photos', 
           registration_number
         );
         student_photo_url = uploadResult.publicUrl;
@@ -1288,10 +1288,10 @@ app.put('/students/:id', async (c) => {
               console.error('Supabase environment variables not set');
               console.log('Skipping photo upload due to missing storage configuration');
             } else {
-              const fileName = `student-photos/${data.registration_number || id}_${Date.now()}_${photo.name}`;
+              const fileName = `Student_photos/${data.registration_number || id}_${Date.now()}_${photo.name}`;
               
               const { data: uploadData, error } = await supabase.storage
-                .from('student-docs')
+                .from('clipstech')
                 .upload(fileName, photo.data, { contentType: photo.type });
                 
               if (error) {
@@ -1300,7 +1300,7 @@ app.put('/students/:id', async (c) => {
               } else {
                 // Get the public URL
                 const { data: urlData } = supabase.storage
-                  .from('student-docs')
+                  .from('clipstech')
                   .getPublicUrl(fileName);
                   
                 update_photo_url = urlData.publicUrl;
@@ -2409,7 +2409,7 @@ app.post('/exam-cards', async (c) => {
             
             const uploadResult = await uploadFileToSupabase(
               fileObj, 
-              'exam-cards', 
+              'exam_cards', 
               `${registration_number || 'unknown'}`
             );
             
@@ -2524,22 +2524,23 @@ app.post('/students/registration/:regNumber/upload-exam-card', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
-    // Upload file to Supabase
-    const fileName = `exam-cards/${registration_number}_${Date.now()}_${file.name}`;
-    const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
-    if (error) return c.json({ error: error.message }, 500);
-    const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
+    // Upload file to Supabase using the helper function
+    const uploadResult = await uploadFileToSupabase(
+      file, 
+      'exam_cards', 
+      registration_number
+    );
     
     // Update or insert exam card record in database
     await pool.query(
       'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
-      [student_id, publicURL]
+      [student_id, uploadResult.publicUrl]
     );
     
     return c.json({ 
       message: 'Exam card uploaded successfully.', 
       registration_number,
-      url: publicURL 
+      url: uploadResult.publicUrl 
     });
   } catch (error) {
     console.error('Error uploading exam card:', error);
@@ -2574,21 +2575,22 @@ app.post('/students/:id/upload-exam-card', async (c) => {
       return c.json({ error: 'No file uploaded' }, 400);
     }
     
-    // Upload file to Supabase
-    const fileName = `exam-cards/${registration_number}_${Date.now()}_${file.name}`;
-    const { data, error } = await supabase.storage.from('student-docs').upload(fileName, file.data, { contentType: file.type });
-    if (error) return c.json({ error: error.message }, 500);
-    const { publicURL } = supabase.storage.from('student-docs').getPublicUrl(fileName).data;
+    // Upload file to Supabase using the helper function
+    const uploadResult = await uploadFileToSupabase(
+      file, 
+      'exam_cards', 
+      registration_number
+    );
     
     // Update or insert exam card record in database
     await pool.query(
       'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
-      [studentId, publicURL]
+      [studentId, uploadResult.publicUrl]
     );
     
     return c.json({ 
       message: 'Exam card uploaded successfully.', 
-      url: publicURL,
+      url: uploadResult.publicUrl,
       note: 'This endpoint is deprecated, please use /students/registration/:regNumber/upload-exam-card instead'
     });
   } catch (error) {
@@ -2651,7 +2653,7 @@ app.post('/students/:id/upload-fee-statement', async (c) => {
     
     const uploadResult = await uploadFileToSupabase(
       file, 
-      'fee-statements', 
+      'fees_statements', 
       `student_${studentId}`
     );
     
@@ -2686,7 +2688,7 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
     
     const uploadResult = await uploadFileToSupabase(
       file, 
-      'fee-receipts', 
+      'fees_statements', 
       `student_${studentId}`
     );
     
@@ -2736,7 +2738,7 @@ app.post('/students/:id/upload-results', async (c) => {
       try {
         const uploadResult = await uploadFileToSupabase(
           file, 
-          'results', 
+          'Result-slips', 
           `student_${studentId}_${semester}`
         );
         
@@ -2790,7 +2792,7 @@ app.post('/upload-timetable', async (c) => {
     
     const uploadResult = await uploadFileToSupabase(
       file, 
-      'timetables', 
+      'Timetables', 
       `${course}_${semester}`
     );
     
