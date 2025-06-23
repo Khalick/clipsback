@@ -112,6 +112,7 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
   console.log('Processing file for upload:', {
     fileType: typeof file,
     isFileInstance: file instanceof File,
+    isArrayBuffer: file instanceof ArrayBuffer,
     hasData: !!file.data,
     hasSize: !!file.size,
     fileName: file.name,
@@ -124,8 +125,20 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
     fileName = file.name;
     fileType = file.type;
     console.log('Using File instance method');
+  } else if (file instanceof ArrayBuffer) {
+    // Direct ArrayBuffer (binary data)
+    fileData = file;
+    fileName = 'uploaded_file';
+    fileType = 'application/octet-stream';
+    console.log('Using ArrayBuffer method');
+  } else if (file.data instanceof ArrayBuffer) {
+    // Object with ArrayBuffer data
+    fileData = file.data;
+    fileName = file.name || 'uploaded_file';
+    fileType = file.type || 'application/octet-stream';
+    console.log('Using ArrayBuffer data property method');
   } else if (file.data) {
-    // Custom object with data property
+    // Custom object with data property (Uint8Array or Buffer)
     fileData = file.data;
     fileName = file.name;
     fileType = file.type;
@@ -147,9 +160,10 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
       hasSize: !!file.size,
       hasArrayBuffer: typeof file.arrayBuffer === 'function',
       isFileInstance: file instanceof File,
+      isArrayBuffer: file instanceof ArrayBuffer,
       keys: typeof file === 'object' ? Object.keys(file) : 'not an object'
     });
-    throw new Error('Invalid file format provided - file must be a File instance, have data property, or have arrayBuffer method');
+    throw new Error('Invalid file format provided - file must be a File instance, ArrayBuffer, have data property, or have arrayBuffer method');
   }
 
   const uploadPath = `${folder}/${prefix}_${Date.now()}_${fileName}`;
@@ -169,7 +183,7 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
   const { data: urlData } = supabase.storage
     .from('clipstech')
     .getPublicUrl(uploadPath);
-    
+  
   console.log(`File uploaded successfully to ${folder} folder`);
   return {
     filePath: uploadPath,
@@ -887,7 +901,7 @@ app.get('/students/:id', async (c) => {
 // Create a new student
 app.post('/students', async (c) => {
   try {
-    // Check if the request is multipart form data
+    // Check if the request is multipart form data or binary data
     const contentType = c.req.header('content-type') || '';
     console.log('Request content-type:', contentType);
     console.log('Full headers:', Object.fromEntries(c.req.raw.headers.entries()));
@@ -896,7 +910,123 @@ app.post('/students', async (c) => {
     console.log('Node env:', process.env.NODE_ENV);
     console.log('Vercel env:', process.env.VERCEL_ENV);
     
-    if (contentType.includes('multipart/form-data')) {
+    // Handle binary photo upload with student data in headers/query
+    if (contentType.includes('application/octet-stream') || 
+        (contentType.includes('image/') && !contentType.includes('multipart'))) {
+      
+      console.log('Detected binary photo upload, processing student data from headers/query');
+      
+      try {
+        // Get student data from query parameters and headers
+        const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
+        const name = c.req.query('name') || c.req.header('x-name');
+        const course = c.req.query('course') || c.req.header('x-course');
+        const level_of_study = c.req.query('level_of_study') || c.req.header('x-level-of-study');
+        const national_id = c.req.query('national_id') || c.req.header('x-national-id');
+        const birth_certificate = c.req.query('birth_certificate') || c.req.header('x-birth-certificate');
+        const date_of_birth = c.req.query('date_of_birth') || c.req.header('x-date-of-birth');
+        const email = c.req.query('email') || c.req.header('x-email');
+        const password = c.req.query('password') || c.req.header('x-password');
+        const fileName = c.req.query('filename') || c.req.header('x-filename') || 'student_photo';
+        
+        // Validate required fields
+        if (!registration_number || !name || !course || !level_of_study) {
+          return c.json({ 
+            error: 'Missing required fields', 
+            details: 'Registration number, name, course, and level of study must be provided via query parameters or headers (x-* headers)' 
+          }, 400);
+        }
+        
+        // Get the binary photo data
+        const photoBinaryData = await c.req.arrayBuffer();
+        let student_photo_url = null;
+        
+        if (photoBinaryData && photoBinaryData.byteLength > 0) {
+          console.log('Binary photo data received, uploading...');
+          
+          try {
+            const uploadResult = await uploadFileToSupabase(
+              photoBinaryData, 
+              'Student_photos', 
+              registration_number
+            );
+            student_photo_url = uploadResult.publicUrl;
+            console.log('Binary photo uploaded successfully:', student_photo_url);
+          } catch (uploadError) {
+            console.error('Exception during binary photo upload:', uploadError);
+            // Continue without photo instead of failing the whole request
+            console.log('Continuing registration without photo due to exception:', uploadError.message);
+          }
+        }
+        
+        // Determine default password if not provided
+        let finalPassword = password;
+        if (!finalPassword) {
+          if (national_id) {
+            finalPassword = national_id;
+          } else if (birth_certificate) {
+            finalPassword = birth_certificate;
+          } else {
+            finalPassword = 'defaultpassword';
+          }
+        }
+        
+        // Hash the password before storing
+        const hashedPassword = await bcrypt.hash(finalPassword, 10);
+        
+        // Format date properly for database
+        let formattedDate = null;
+        if (date_of_birth) {
+          try {
+            const dateObj = new Date(date_of_birth);
+            if (!isNaN(dateObj.getTime())) {
+              formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
+            }
+          } catch (err) {
+            console.error('Error formatting date:', err);
+          }
+        }
+        
+        console.log('Inserting student with binary photo upload:', {
+          registration_number,
+          name,
+          course,
+          level_of_study,
+          photo_url: student_photo_url || null,
+          national_id: national_id || null,
+          birth_certificate: birth_certificate || null,
+          date_of_birth: formattedDate,
+          email: email || null,
+          password: 'HASHED'
+        });
+        
+        const { rows } = await pool.query(
+          `INSERT INTO students (
+            registration_number, name, course, level_of_study, photo_url,
+            national_id, birth_certificate, date_of_birth, password, email, status
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+          [
+            registration_number, name, course, level_of_study, student_photo_url || null,
+            national_id || null, birth_certificate || null, formattedDate, hashedPassword, email || null, 'active'
+          ]
+        );
+        
+        return c.json({
+          ...rows[0],
+          message: 'Student created successfully with binary photo upload'
+        });
+        
+      } catch (binaryError) {
+        console.error('Error processing binary photo upload:', binaryError);
+        return c.json({
+          error: 'Failed to process binary photo upload',
+          details: binaryError.message,
+          stack: process.env.NODE_ENV === 'development' ? binaryError.stack : undefined
+        }, 500);
+      }
+    }
+    // Handle multipart/form-data
+    else if (contentType.includes('multipart/form-data')) {
       console.log('Detected multipart/form-data request, redirecting to multipart handler');
       // Redirect to the multipart handler (which makes photo optional)
       try {
@@ -2398,17 +2528,111 @@ app.post('/exam-cards', async (c) => {
   try {
     console.log('POST /exam-cards request received');
     
-    // Check if the request is multipart/form-data
+    // Check content type to determine handling method
     const contentType = c.req.header('content-type') || '';
     console.log('Request content-type:', contentType);
     
     let registration_number;
     let file_url;
     
-    // Handle multipart/form-data (file upload first)
-    if (contentType.includes('multipart/form-data')) {
+    // Handle binary file upload (application/octet-stream or specific file types)
+    if (contentType.includes('application/octet-stream') || 
+        contentType.includes('image/') || 
+        contentType.includes('application/pdf') ||
+        contentType.includes('application/msword') ||
+        contentType.includes('application/vnd.openxmlformats')) {
+      
       try {
-        console.log('Processing multipart form data for file upload');
+        console.log('Processing binary file upload');
+        
+        // Get registration number and filename from query parameters or headers
+        const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
+        const fileName = c.req.query('filename') || c.req.header('x-filename') || 'exam_card';
+        const fileType = contentType;
+        
+        if (!registration_number) {
+          return c.json({
+            error: 'Missing registration number',
+            details: 'Registration number must be provided via query parameter (?registration_number=) or x-registration-number header'
+          }, 400);
+        }
+        
+        // Get the binary data from request body
+        const binaryData = await c.req.arrayBuffer();
+        
+        if (!binaryData || binaryData.byteLength === 0) {
+          return c.json({
+            error: 'Missing file data',
+            details: 'Binary file data is required'
+          }, 400);
+        }
+        
+        console.log('Binary file details:', {
+          registration_number,
+          fileName,
+          fileType,
+          size: binaryData.byteLength
+        });
+        
+        // Upload to Supabase with custom expiry
+        const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${fileName}`;
+        
+        console.log(`Uploading binary file to exam_cards folder in clipstech bucket...`);
+        
+        const { data, error } = await supabase.storage
+          .from('clipstech')
+          .upload(uploadPath, binaryData, { 
+            contentType: fileType,
+            cacheControl: '31536000' // 1 year cache
+          });
+          
+        if (error) {
+          console.error(`Error uploading binary file to exam_cards:`, error);
+          throw error;
+        }
+
+        // Get the public URL with custom expiry (1 year from now)
+        const expiresIn = 31536000; // 1 year in seconds
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('clipstech')
+          .createSignedUrl(uploadPath, expiresIn);
+          
+        if (urlError) {
+          console.error('Error creating signed URL:', urlError);
+          // Fallback to public URL if signed URL fails
+          const { data: publicUrlData } = supabase.storage
+            .from('clipstech')
+            .getPublicUrl(uploadPath);
+          file_url = publicUrlData.publicUrl;
+        } else {
+          file_url = urlData.signedUrl;
+        }
+        
+        console.log('Binary file uploaded successfully:', file_url);
+        
+        // Return file URL for further processing
+        return c.json({
+          message: 'Binary file uploaded successfully',
+          file_url: file_url,
+          registration_number: registration_number,
+          upload_path: uploadPath,
+          expires_in_seconds: expiresIn,
+          file_size: binaryData.byteLength,
+          note: 'Use the file_url and registration_number to save the exam card record'
+        });
+        
+      } catch (uploadError) {
+        console.error('Error uploading binary file for exam card:', uploadError);
+        return c.json({
+          error: 'Failed to upload binary file for exam card',
+          details: uploadError.message
+        }, 500);
+      }
+    } 
+    // Handle multipart/form-data (legacy support)
+    else if (contentType.includes('multipart/form-data')) {
+      try {
+        console.log('Processing multipart form data for file upload (legacy mode)');
         const formData = await c.req.formData();
         console.log('Form data parsed with formData():', [...formData.keys()]);
         
@@ -2449,13 +2673,8 @@ app.post('/exam-cards', async (c) => {
           });
           
           try {
-            // Convert File to our expected format for uploadFileToSupabase
+            // Convert File to binary data
             const fileData = await file.arrayBuffer();
-            const fileObj = {
-              name: file.name,
-              type: file.type,
-              data: new Uint8Array(fileData)
-            };
             
             // Upload to Supabase with custom expiry (e.g., 1 year = 31536000 seconds)
             const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
@@ -2464,7 +2683,7 @@ app.post('/exam-cards', async (c) => {
             
             const { data, error } = await supabase.storage
               .from('clipstech')
-              .upload(uploadPath, fileObj.data, { 
+              .upload(uploadPath, fileData, { 
                 contentType: file.type,
                 cacheControl: '31536000' // 1 year cache
               });
@@ -2495,7 +2714,7 @@ app.post('/exam-cards', async (c) => {
             
             // Return just the file URL for frontend to use in second request
             return c.json({
-              message: 'File uploaded successfully',
+              message: 'File uploaded successfully (legacy mode)',
               file_url: file_url,
               registration_number: registration_number,
               note: 'Use these values to save the exam card record to database'
@@ -2621,99 +2840,194 @@ app.post('/exam-cards/upload', async (c) => {
   try {
     console.log('POST /exam-cards/upload request received - file upload only');
     
-    // Check if the request is multipart/form-data
+    // Check content type to determine handling method
     const contentType = c.req.header('content-type') || '';
     console.log('Request content-type:', contentType);
     
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires multipart/form-data for file uploads'
-      }, 400);
-    }
-    
-    try {
-      const formData = await c.req.formData();
-      console.log('Form data parsed:', [...formData.keys()]);
+    // Handle binary file upload (preferred method)
+    if (contentType.includes('application/octet-stream') || 
+        contentType.includes('image/') || 
+        contentType.includes('application/pdf') ||
+        contentType.includes('application/msword') ||
+        contentType.includes('application/vnd.openxmlformats')) {
       
-      const registration_number = formData.get('registration_number');
-      const file = formData.get('file');
-      
-      // Validate required fields
-      if (!registration_number) {
-        return c.json({
-          error: 'Missing registration number',
-          details: 'Registration number is required for file upload'
-        }, 400);
-      }
-      
-      if (!file || !file instanceof File || file.size === 0) {
-        return c.json({
-          error: 'Missing or invalid file',
-          details: 'A valid file is required'
-        }, 400);
-      }
-      
-      console.log('Uploading file:', {
-        name: file.name,
-        type: file.type,
-        size: file.size,
-        registration_number
-      });
-      
-      // Upload file to Supabase with custom expiry
-      const fileData = await file.arrayBuffer();
-      const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
-      
-      const { data, error } = await supabase.storage
-        .from('clipstech')
-        .upload(uploadPath, fileData, { 
-          contentType: file.type,
-          cacheControl: '31536000' // 1 year cache
+      try {
+        console.log('Processing binary file upload');
+        
+        // Get registration number and filename from query parameters or headers
+        const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
+        const fileName = c.req.query('filename') || c.req.header('x-filename') || 'exam_card';
+        const fileType = contentType;
+        
+        if (!registration_number) {
+          return c.json({
+            error: 'Missing registration number',
+            details: 'Registration number must be provided via query parameter (?registration_number=) or x-registration-number header'
+          }, 400);
+        }
+        
+        // Get the binary data from request body
+        const binaryData = await c.req.arrayBuffer();
+        
+        if (!binaryData || binaryData.byteLength === 0) {
+          return c.json({
+            error: 'Missing file data',
+            details: 'Binary file data is required'
+          }, 400);
+        }
+        
+        console.log('Binary file upload details:', {
+          registration_number,
+          fileName,
+          fileType,
+          size: binaryData.byteLength
         });
         
-      if (error) {
-        console.error('Supabase upload error:', error);
+        // Upload file to Supabase with custom expiry
+        const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${fileName}`;
+        
+        const { data, error } = await supabase.storage
+          .from('clipstech')
+          .upload(uploadPath, binaryData, { 
+            contentType: fileType,
+            cacheControl: '31536000' // 1 year cache
+          });
+          
+        if (error) {
+          console.error('Supabase upload error:', error);
+          return c.json({
+            error: 'Failed to upload file',
+            details: error.message
+          }, 500);
+        }
+        
+        // Create signed URL with custom expiry (1 year)
+        const expiresIn = 31536000; // 1 year in seconds
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('clipstech')
+          .createSignedUrl(uploadPath, expiresIn);
+          
+        let file_url;
+        if (urlError) {
+          console.error('Error creating signed URL, using public URL:', urlError);
+          const { data: publicUrlData } = supabase.storage
+            .from('clipstech')
+            .getPublicUrl(uploadPath);
+          file_url = publicUrlData.publicUrl;
+        } else {
+          file_url = urlData.signedUrl;
+        }
+        
+        console.log('Binary file uploaded successfully:', file_url);
+        
         return c.json({
-          error: 'Failed to upload file',
-          details: error.message
+          message: 'Binary file uploaded successfully',
+          file_url: file_url,
+          registration_number: registration_number,
+          upload_path: uploadPath,
+          expires_in_seconds: expiresIn,
+          file_size: binaryData.byteLength,
+          note: 'Use the file_url and registration_number to save the exam card record'
+        });
+        
+      } catch (uploadError) {
+        console.error('Error during binary file upload:', uploadError);
+        return c.json({
+          error: 'Binary file upload failed',
+          details: uploadError.message
         }, 500);
       }
-      
-      // Create signed URL with custom expiry (1 year)
-      const expiresIn = 31536000; // 1 year in seconds
-      const { data: urlData, error: urlError } = await supabase.storage
-        .from('clipstech')
-        .createSignedUrl(uploadPath, expiresIn);
+    }
+    // Handle multipart/form-data (legacy support) 
+    else if (contentType.includes('multipart/form-data')) {
+      try {
+        const formData = await c.req.formData();
+        console.log('Form data parsed:', [...formData.keys()]);
         
-      let file_url;
-      if (urlError) {
-        console.error('Error creating signed URL, using public URL:', urlError);
-        const { data: publicUrlData } = supabase.storage
+        const registration_number = formData.get('registration_number');
+        const file = formData.get('file');
+        
+        // Validate required fields
+        if (!registration_number) {
+          return c.json({
+            error: 'Missing registration number',
+            details: 'Registration number is required for file upload'
+          }, 400);
+        }
+        
+        if (!file || !file instanceof File || file.size === 0) {
+          return c.json({
+            error: 'Missing or invalid file',
+            details: 'A valid file is required'
+          }, 400);
+        }
+        
+        console.log('Uploading file (legacy mode):', {
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          registration_number
+        });
+        
+        // Upload file to Supabase with custom expiry
+        const fileData = await file.arrayBuffer();
+        const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
+        
+        const { data, error } = await supabase.storage
           .from('clipstech')
-          .getPublicUrl(uploadPath);
-        file_url = publicUrlData.publicUrl;
-      } else {
-        file_url = urlData.signedUrl;
+          .upload(uploadPath, fileData, { 
+            contentType: file.type,
+            cacheControl: '31536000' // 1 year cache
+          });
+          
+        if (error) {
+          console.error('Supabase upload error:', error);
+          return c.json({
+            error: 'Failed to upload file',
+            details: error.message
+          }, 500);
+        }
+        
+        // Create signed URL with custom expiry (1 year)
+        const expiresIn = 31536000; // 1 year in seconds
+        const { data: urlData, error: urlError } = await supabase.storage
+          .from('clipstech')
+          .createSignedUrl(uploadPath, expiresIn);
+          
+        let file_url;
+        if (urlError) {
+          console.error('Error creating signed URL, using public URL:', urlError);
+          const { data: publicUrlData } = supabase.storage
+            .from('clipstech')
+            .getPublicUrl(uploadPath);
+          file_url = publicUrlData.publicUrl;
+        } else {
+          file_url = urlData.signedUrl;
+        }
+        
+        console.log('File uploaded successfully (legacy mode):', file_url);
+        
+        return c.json({
+          message: 'File uploaded successfully (legacy mode)',
+          file_url: file_url,
+          registration_number: registration_number,
+          upload_path: uploadPath,
+          expires_in_seconds: expiresIn,
+          note: 'Use the file_url and registration_number to save the exam card record'
+        });
+        
+      } catch (uploadError) {
+        console.error('Error during file upload:', uploadError);
+        return c.json({
+          error: 'File upload failed',
+          details: uploadError.message
+        }, 500);
       }
-      
-      console.log('File uploaded successfully:', file_url);
-      
+    } else {
       return c.json({
-        message: 'File uploaded successfully',
-        file_url: file_url,
-        registration_number: registration_number,
-        upload_path: uploadPath,
-        expires_in_seconds: expiresIn,
-        note: 'Use the file_url and registration_number to save the exam card record'
-      });
-      
-    } catch (uploadError) {
-      console.error('Error during file upload:', uploadError);
-      return c.json({
-        error: 'File upload failed',
-        details: uploadError.message
-      }, 500);
+        error: 'Invalid content type',
+        details: 'This endpoint requires either binary data (application/octet-stream, image/*, application/pdf) or multipart/form-data for file uploads'
+      }, 400);
     }
   } catch (error) {
     console.error('Error in file upload endpoint:', error);
@@ -2817,42 +3131,96 @@ app.post('/students/registration/:regNumber/upload-exam-card', async (c) => {
     
     const student_id = studentResult.rows[0].id;
     
-    // Parse multipart form data
-    const formData = await c.req.formData();
-    console.log('Form data received:', [...formData.keys()]);
+    // Check content type to determine handling method
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
     
-    // Extract file
-    const file = formData.get('file');
-    if (!file) {
-      return c.json({ error: 'No file uploaded' }, 400);
+    // Handle binary file upload
+    if (contentType.includes('application/octet-stream') || 
+        contentType.includes('image/') || 
+        contentType.includes('application/pdf')) {
+      
+      console.log('Processing binary file upload for exam card');
+      
+      // Get filename from query or header
+      const fileName = c.req.query('filename') || c.req.header('x-filename') || 'exam_card';
+      
+      // Get the binary data from request body
+      const binaryData = await c.req.arrayBuffer();
+      
+      if (!binaryData || binaryData.byteLength === 0) {
+        return c.json({
+          error: 'Missing file data',
+          details: 'Binary file data is required'
+        }, 400);
+      }
+      
+      console.log('Binary exam card details:', {
+        registration_number,
+        fileName,
+        contentType,
+        size: binaryData.byteLength
+      });
+      
+      // Upload binary file to Supabase
+      const uploadResult = await uploadFileToSupabase(
+        binaryData, 
+        'exam_cards', 
+        registration_number
+      );
+      
+      // Update or insert exam card record in database
+      await pool.query(
+        'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
+        [student_id, uploadResult.publicUrl]
+      );
+      
+      return c.json({ 
+        message: 'Binary exam card uploaded successfully.', 
+        registration_number,
+        url: uploadResult.publicUrl,
+        file_size: binaryData.byteLength
+      });
     }
-    
-    // Convert File to our expected format for uploadFileToSupabase
-    const fileData = await file.arrayBuffer();
-    const fileObj = {
-      name: file.name,
-      type: file.type,
-      data: new Uint8Array(fileData)
-    };
-    
-    // Upload file to Supabase using the helper function
-    const uploadResult = await uploadFileToSupabase(
-      fileObj, 
-      'exam_cards', 
-      registration_number
-    );
-    
-    // Update or insert exam card record in database
-    await pool.query(
-      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
-      [student_id, uploadResult.publicUrl]
-    );
-    
-    return c.json({ 
-      message: 'Exam card uploaded successfully.', 
-      registration_number,
-      url: uploadResult.publicUrl 
-    });
+    // Handle multipart/form-data (legacy support)
+    else if (contentType.includes('multipart/form-data')) {
+      // Parse multipart form data
+      const formData = await c.req.formData();
+      console.log('Form data received:', [...formData.keys()]);
+      
+      // Extract file
+      const file = formData.get('file');
+      if (!file) {
+        return c.json({ error: 'No file uploaded' }, 400);
+      }
+      
+      // Convert File to binary data
+      const fileData = await file.arrayBuffer();
+      
+      // Upload file to Supabase using the helper function
+      const uploadResult = await uploadFileToSupabase(
+        fileData, 
+        'exam_cards', 
+        registration_number
+      );
+      
+      // Update or insert exam card record in database
+      await pool.query(
+        'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
+        [student_id, uploadResult.publicUrl]
+      );
+      
+      return c.json({ 
+        message: 'Exam card uploaded successfully (legacy mode).', 
+        registration_number,
+        url: uploadResult.publicUrl 
+      });
+    } else {
+      return c.json({
+        error: 'Invalid content type',
+        details: 'This endpoint requires either binary data or multipart/form-data'
+      }, 400);
+    }
   } catch (error) {
     console.error('Error uploading exam card:', error);
     return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
