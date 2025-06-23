@@ -81,8 +81,7 @@
     <!-- Exam Card Upload -->
     <div class="upload-section">
         <h2>📄 Exam Card Upload</h2>
-        
-        <div class="method-selector">
+          <div class="method-selector">
             <label>
                 <input type="radio" name="examCardMethod" value="binary" checked> 
                 Binary Upload (Preferred)
@@ -92,11 +91,21 @@
                 Multipart Upload (Legacy)
             </label>
         </div>
+        
+        <div class="method-selector">
+            <label>
+                <input type="radio" name="examCardEndpoint" value="regNumber" checked> 
+                Use /exam-cards/:regNumber endpoint
+            </label>
+            <label>
+                <input type="radio" name="examCardEndpoint" value="upload"> 
+                Use /exam-cards/upload endpoint
+            </label>
+        </div>
 
-        <form id="examCardForm">
-            <div class="form-group">
+        <form id="examCardForm">            <div class="form-group">
                 <label for="examRegistrationNumber">Registration Number*</label>
-                <input type="text" id="examRegistrationNumber" name="registration_number" value="STU001" required>
+                <input type="text" id="examRegistrationNumber" name="registration_number" value="CT101/G/16070" required>
             </div>
             <div class="form-group">
                 <label for="examFile">Exam Card File*</label>
@@ -162,10 +171,10 @@
         // Exam Card Upload Handler
         document.getElementById('examCardForm').addEventListener('submit', async function(e) {
             e.preventDefault();
-            
-            const uploadBtn = document.getElementById('examUploadBtn');
+              const uploadBtn = document.getElementById('examUploadBtn');
             const response = document.getElementById('examResponse');
             const method = document.querySelector('input[name="examCardMethod"]:checked').value;
+            const endpoint = document.querySelector('input[name="examCardEndpoint"]:checked').value;
             
             uploadBtn.disabled = true;
             uploadBtn.textContent = 'Uploading...';
@@ -180,35 +189,48 @@
                     throw new Error('Please select a file');
                 }
                 
-                let result;
+                let result;                let uploadUrl, headers;
+                
+                if (endpoint === 'regNumber') {
+                    uploadUrl = `/exam-cards/${encodeURIComponent(registrationNumber)}`;
+                    headers = {
+                        'Content-Type': file.type || 'application/octet-stream',
+                        'X-Filename': file.name
+                    };
+                } else {
+                    uploadUrl = '/exam-cards/upload';
+                    headers = {
+                        'Content-Type': file.type || 'application/octet-stream',
+                        'X-Registration-Number': registrationNumber,
+                        'X-Filename': file.name
+                    };
+                }
                 
                 if (method === 'binary') {
                     // Binary upload
-                    console.log('Using binary upload method');
+                    console.log(`Using binary upload method with ${endpoint} endpoint`);
                     const arrayBuffer = await file.arrayBuffer();
                     
-                    const uploadResponse = await fetch('/exam-cards/upload', {
+                    const uploadResponse = await fetch(uploadUrl, {
                         method: 'POST',
-                        headers: {
-                            'Content-Type': file.type || 'application/octet-stream',
-                            'X-Registration-Number': registrationNumber,
-                            'X-Filename': file.name
-                        },
+                        headers: headers,
                         body: arrayBuffer
                     });
                     
                     result = await uploadResponse.json();
                     result._method = 'binary';
+                    result._endpoint = endpoint;
                 } else {
                     // Multipart upload (legacy)
-                    console.log('Using multipart upload method');
-                    const uploadResponse = await fetch('/exam-cards/upload', {
+                    console.log(`Using multipart upload method with ${endpoint} endpoint`);
+                    const uploadResponse = await fetch(uploadUrl, {
                         method: 'POST',
                         body: formData
                     });
                     
                     result = await uploadResponse.json();
                     result._method = 'multipart';
+                    result._endpoint = endpoint;
                 }
                 
                 response.style.display = 'block';
