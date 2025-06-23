@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simple API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .test-section {
+            border: 1px solid #ddd;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .response {
+            margin-top: 10px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #f9f9f9;
+            white-space: pre-wrap;
+            font-family: monospace;
+            font-size: 12px;
+            display: none;
+        }
+        .response.success {
+            border-color: #4CAF50;
+            background-color: #f0fff0;
+        }
+        .response.error {
+            border-color: #f44336;
+            background-color: #fff0f0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Simple API Test</h1>
+    <p>Testing basic API endpoints to troubleshoot the server crash issue.</p>
+
+    <div class="test-section">
+        <h3>Health Check</h3>
+        <button onclick="testHealth()">Test /api/health</button>
+        <div class="response" id="healthResponse"></div>
+    </div>
+
+    <div class="test-section">
+        <h3>Get Students</h3>
+        <button onclick="testStudents()">Test GET /students</button>
+        <div class="response" id="studentsResponse"></div>
+    </div>
+
+    <div class="test-section">
+        <h3>CORS Test</h3>
+        <button onclick="testCors()">Test OPTIONS /exam-cards/upload</button>
+        <div class="response" id="corsResponse"></div>
+    </div>
+
+    <div class="test-section">
+        <h3>Simple Exam Cards Test</h3>
+        <button onclick="testExamCardsSimple()">Test GET /exam-cards</button>
+        <div class="response" id="examCardsResponse"></div>
+    </div>
+
+    <script>
+        async function makeRequest(url, options = {}) {
+            try {
+                console.log(`Making request to: ${url}`);
+                const response = await fetch(url, options);
+                const data = await response.json();
+                return {
+                    success: response.ok,
+                    status: response.status,
+                    data: data
+                };
+            } catch (error) {
+                return {
+                    success: false,
+                    error: error.message
+                };
+            }
+        }
+
+        function showResponse(elementId, result) {
+            const element = document.getElementById(elementId);
+            element.style.display = 'block';
+            element.className = `response ${result.success ? 'success' : 'error'}`;
+            element.textContent = JSON.stringify(result, null, 2);
+        }
+
+        async function testHealth() {
+            const result = await makeRequest('/api/health');
+            showResponse('healthResponse', result);
+        }
+
+        async function testStudents() {
+            const result = await makeRequest('/students');
+            showResponse('studentsResponse', result);
+        }
+
+        async function testCors() {
+            const result = await makeRequest('/exam-cards/upload', {
+                method: 'OPTIONS',
+                headers: {
+                    'Origin': window.location.origin,
+                    'Access-Control-Request-Method': 'POST',
+                    'Access-Control-Request-Headers': 'Content-Type, X-Registration-Number, X-Filename'
+                }
+            });
+            showResponse('corsResponse', result);
+        }
+
+        async function testExamCardsSimple() {
+            const result = await makeRequest('/exam-cards');
+            showResponse('examCardsResponse', result);
+        }
+    </script>
+</body>
+</html>

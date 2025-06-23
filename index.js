@@ -7,19 +7,7 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 import { serveStatic } from '@hono/node-server/serve-static';
 
-const app = new Hono({
-  // Add proper parsing configuration for multipart/form-data
-  parseBody: {
-    formData: {
-      // Increase limit to handle larger file uploads
-      limit: '10mb',
-    },
-    // Handle JSON data type as well
-    json: {
-      limit: '1mb',
-    }
-  }
-});
+const app = new Hono();
 
 // SINGLE CORS configuration
 app.use('*', cors({
@@ -2013,7 +2001,7 @@ app.put('/units/:id', async (c) => {
     const id = c.req.param('id');
     const { unit_name, unit_code } = await c.req.json();
     const { rows } = await pool.query(
-      'UPDATE units
+      'UPDATE units SET unit_name=$1, unit_code=$2 WHERE id=$3 RETURNING *',
       [unit_name, unit_code, id]
     );
     if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
