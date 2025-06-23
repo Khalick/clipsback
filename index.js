@@ -2376,31 +2376,41 @@ app.post('/exam-cards', async (c) => {
     if (contentType.includes('multipart/form-data')) {
       try {
         console.log('Processing multipart form data for exam card');
-        const formData = await c.req.formData();
-        console.log('Form data parsed:', Array.from(formData.keys()));
+        const formData = await c.req.parseBody();
+        console.log('Form data parsed with parseBody:', Object.keys(formData));
         
-        registration_number = formData.get('registration_number');
-        file_url = formData.get('file_url');
+        // Validate form data
+        if (!formData || typeof formData !== 'object') {
+          return c.json({
+            error: 'Invalid form data',
+            details: 'Failed to parse multipart form data properly'
+          }, 400);
+        }
+        
+        registration_number = formData.registration_number;
+        file_url = formData.file_url;
+        
+        // Validate required fields
+        if (!registration_number) {
+          return c.json({
+            error: 'Missing required field',
+            details: 'Registration number is required'
+          }, 400);
+        }
         
         // Handle file upload if present
-        const file = formData.get('file');
-        if (file && typeof file !== 'string') {
+        const file = formData.file;
+        if (file && file.data) {
           console.log('File included in request, uploading...');
+          console.log('File details:', {
+            name: file.name,
+            type: file.type,
+            size: file.data ? file.data.length : 'unknown'
+          });
           
           try {
-            // Get file data as array buffer
-            const fileData = await file.arrayBuffer();
-            const fileName = file.name || 'exam-card.pdf';
-            const fileType = file.type || 'application/pdf';
-            
-            const fileObj = {
-              name: fileName,
-              type: fileType,
-              data: new Uint8Array(fileData)
-            };
-            
             const uploadResult = await uploadFileToSupabase(
-              fileObj, 
+              file, 
               'exam_cards', 
               `${registration_number || 'unknown'}`
             );
@@ -2414,13 +2424,36 @@ app.post('/exam-cards', async (c) => {
               details: uploadError.message
             }, 500);
           }
+        } else if (!file_url) {
+          return c.json({
+            error: 'Missing file or file URL',
+            details: 'Either upload a file or provide a file URL'
+          }, 400);
         }
       } catch (formError) {
         console.error('Error processing form data for exam card:', formError);
+        console.error('FormError details:', {
+          message: formError.message,
+          name: formError.name,
+          stack: process.env.NODE_ENV === 'development' ? formError.stack : undefined
+        });
+        
+        // Provide more specific error messages based on error type
+        let errorMessage = 'Failed to process form data';
+        let errorDetails = formError.message;
+        
+        if (formError.message.includes('parseBody')) {
+          errorMessage = 'Form data parsing failed';
+          errorDetails = 'The multipart form data could not be parsed. Ensure the content-type header is set correctly and the form data is properly formatted.';
+        } else if (formError.message.includes('FormData')) {
+          errorMessage = 'Invalid form data format';
+          errorDetails = 'The form data format is invalid. Make sure you are sending multipart/form-data with the correct field names.';
+        }
+        
         return c.json({
-          error: 'Failed to process form data',
-          details: formError.message,
-          help: 'Make sure you are sending a properly formatted multipart/form-data request'
+          error: errorMessage,
+          details: errorDetails,
+          help: 'Make sure you are sending a properly formatted multipart/form-data request with registration_number and either a file or file_url field'
         }, 400);
       }
     } else {
@@ -2441,18 +2474,38 @@ app.post('/exam-cards', async (c) => {
       }
     }
     
-    // Validate required fields
+    // Validate required fields after processing both multipart and JSON requests
     if (!registration_number || !file_url) {
       return c.json({ 
         error: 'Missing required fields', 
-        details: 'Registration number and file URL are required' 
+        details: 'Registration number and file URL are required',
+        received: {
+          registration_number: registration_number || 'missing',
+          file_url: file_url || 'missing'
+        }
+      }, 400);
+    }
+    
+    // Validate registration number format (basic validation)
+    if (typeof registration_number !== 'string' || registration_number.trim().length === 0) {
+      return c.json({
+        error: 'Invalid registration number',
+        details: 'Registration number must be a non-empty string'
+      }, 400);
+    }
+    
+    // Validate file URL format (basic validation)
+    if (typeof file_url !== 'string' || file_url.trim().length === 0) {
+      return c.json({
+        error: 'Invalid file URL',
+        details: 'File URL must be a non-empty string'
       }, 400);
     }
     
     // Get student_id from registration_number
     const studentResult = await pool.query(
       'SELECT id FROM students WHERE registration_number = $1',
-      [registration_number]
+      [registration_number.trim()]
     );
     
     if (studentResult.rows.length === 0) {
@@ -2636,19 +2689,72 @@ app.post('/students/:id/fee-receipt', async (c) => {
 app.post('/students/:id/upload-fee-statement', async (c) => {
   try {
     const studentId = c.req.param('id');
-    const formData = await c.req.parseBody();
-    const file = formData['file'];
+    console.log('Uploading fee statement for student:', studentId);
     
-    if (!file) {
-      return c.json({ error: 'No file uploaded' }, 400);
+    // Check if the request is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
+    
+    if (!contentType.includes('multipart/form-data')) {
+      return c.json({
+        error: 'Invalid content type',
+        details: 'This endpoint requires multipart/form-data'
+      }, 400);
     }
     
+    // Parse multipart form data with error handling
+    let formData;
+    try {
+      formData = await c.req.parseBody();
+      console.log('Form data parsed successfully, keys:', Object.keys(formData));
+    } catch (parseError) {
+      console.error('Error parsing form data:', parseError);
+      return c.json({
+        error: 'Failed to process form data',
+        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
+        originalError: parseError.message
+      }, 400);
+    }
+    
+    // Validate form data
+    if (!formData || typeof formData !== 'object') {
+      return c.json({
+        error: 'Invalid form data',
+        details: 'Failed to parse multipart form data properly'
+      }, 400);
+    }
+    
+    // Extract and validate file
+    const file = formData['file'] || formData.file;
+    if (!file) {
+      return c.json({ 
+        error: 'No file uploaded',
+        details: 'A file is required for fee statement upload'
+      }, 400);
+    }
+    
+    // Validate file properties
+    if (!file.name || !file.type) {
+      return c.json({
+        error: 'Invalid file',
+        details: 'Uploaded file is missing required properties (name or type)'
+      }, 400);
+    }
+    
+    console.log('Fee statement file details:', {
+      name: file.name,
+      type: file.type,
+      size: file.size || (file.data ? file.data.length : 'unknown')
+    });
+    
+    // Upload file to Supabase
     const uploadResult = await uploadFileToSupabase(
       file, 
       'fees_statements', 
       `student_${studentId}`
     );
     
+    // Insert into database
     await pool.query(
       'INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', 
       [studentId, formData.statement || 'Fee Statement', uploadResult.publicUrl]
@@ -2656,13 +2762,15 @@ app.post('/students/:id/upload-fee-statement', async (c) => {
     
     return c.json({ 
       message: 'Fee statement uploaded successfully', 
-      url: uploadResult.publicUrl 
+      url: uploadResult.publicUrl,
+      file_name: file.name
     });
   } catch (error) {
     console.error('Error uploading fee statement:', error);
     return c.json({ 
       error: 'Failed to upload fee statement', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 500);
   }
 });
@@ -2671,19 +2779,72 @@ app.post('/students/:id/upload-fee-statement', async (c) => {
 app.post('/students/:id/upload-fee-receipt', async (c) => {
   try {
     const studentId = c.req.param('id');
-    const formData = await c.req.parseBody();
-    const file = formData['file'];
+    console.log('Uploading fee receipt for student:', studentId);
     
-    if (!file) {
-      return c.json({ error: 'No file uploaded' }, 400);
+    // Check if the request is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
+    
+    if (!contentType.includes('multipart/form-data')) {
+      return c.json({
+        error: 'Invalid content type',
+        details: 'This endpoint requires multipart/form-data'
+      }, 400);
     }
     
+    // Parse multipart form data with error handling
+    let formData;
+    try {
+      formData = await c.req.parseBody();
+      console.log('Form data parsed successfully, keys:', Object.keys(formData));
+    } catch (parseError) {
+      console.error('Error parsing form data:', parseError);
+      return c.json({
+        error: 'Failed to process form data',
+        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
+        originalError: parseError.message
+      }, 400);
+    }
+    
+    // Validate form data
+    if (!formData || typeof formData !== 'object') {
+      return c.json({
+        error: 'Invalid form data',
+        details: 'Failed to parse multipart form data properly'
+      }, 400);
+    }
+    
+    // Extract and validate file
+    const file = formData['file'] || formData.file;
+    if (!file) {
+      return c.json({ 
+        error: 'No file uploaded',
+        details: 'A file is required for fee receipt upload'
+      }, 400);
+    }
+    
+    // Validate file properties
+    if (!file.name || !file.type) {
+      return c.json({
+        error: 'Invalid file',
+        details: 'Uploaded file is missing required properties (name or type)'
+      }, 400);
+    }
+    
+    console.log('Fee receipt file details:', {
+      name: file.name,
+      type: file.type,
+      size: file.size || (file.data ? file.data.length : 'unknown')
+    });
+    
+    // Upload file to Supabase
     const uploadResult = await uploadFileToSupabase(
       file, 
       'fees_statements', 
       `student_${studentId}`
     );
     
+    // Insert into database
     await pool.query(
       'INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', 
       [studentId, uploadResult.publicUrl]
@@ -2691,13 +2852,15 @@ app.post('/students/:id/upload-fee-receipt', async (c) => {
     
     return c.json({ 
       message: 'Fee receipt uploaded successfully', 
-      url: uploadResult.publicUrl 
+      url: uploadResult.publicUrl,
+      file_name: file.name
     });
   } catch (error) {
     console.error('Error uploading fee receipt:', error);
     return c.json({ 
       error: 'Failed to upload fee receipt', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 500);
   }
 });
@@ -2708,14 +2871,41 @@ app.post('/students/:id/upload-results', async (c) => {
     const studentId = c.req.param('id');
     console.log('Uploading results for student:', studentId);
     
-    // Parse multipart form data
-    const formData = await c.req.parseBody();
-    console.log('Form data received:', Object.keys(formData));
+    // Check if the request is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
     
-    // Extract metadata
+    if (!contentType.includes('multipart/form-data')) {
+      return c.json({
+        error: 'Invalid content type',
+        details: 'This endpoint requires multipart/form-data'
+      }, 400);
+    }
+    
+    // Parse multipart form data with error handling
+    let formData;
+    try {
+      formData = await c.req.parseBody();
+      console.log('Form data parsed successfully, keys:', Object.keys(formData));
+    } catch (parseError) {
+      console.error('Error parsing form data:', parseError);
+      return c.json({
+        error: 'Failed to process form data',
+        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
+        originalError: parseError.message
+      }, 400);
+    }
+    
+    // Validate form data
+    if (!formData || typeof formData !== 'object') {
+      return c.json({
+        error: 'Invalid form data',
+        details: 'Failed to parse multipart form data properly'
+      }, 400);
+    }
+    
+    // Extract and validate required fields
     const semester = formData.semester;
-    const result_data = formData.result_data ? JSON.parse(formData.result_data) : {};
-    
     if (!semester) {
       return c.json({ 
         error: 'Missing required field', 
@@ -2723,10 +2913,37 @@ app.post('/students/:id/upload-results', async (c) => {
       }, 400);
     }
     
-    // Handle file upload
-    const file = formData.file;
+    // Parse result data
+    let result_data = {};
+    try {
+      result_data = formData.result_data ? JSON.parse(formData.result_data) : {};
+    } catch (jsonError) {
+      console.error('Error parsing result_data JSON:', jsonError);
+      return c.json({
+        error: 'Invalid result data',
+        details: 'Result data must be valid JSON format'
+      }, 400);
+    }
     
-    if (file && file.data) {
+    console.log('Results metadata:', { semester, result_data_keys: Object.keys(result_data) });
+    
+    // Handle file upload (optional)
+    const file = formData.file;
+    if (file) {
+      // Validate file properties
+      if (!file.name || !file.type) {
+        return c.json({
+          error: 'Invalid file',
+          details: 'Uploaded file is missing required properties (name or type)'
+        }, 400);
+      }
+      
+      console.log('Results file details:', {
+        name: file.name,
+        type: file.type,
+        size: file.size || (file.data ? file.data.length : 'unknown')
+      });
+      
       try {
         const uploadResult = await uploadFileToSupabase(
           file, 
@@ -2736,9 +2953,13 @@ app.post('/students/:id/upload-results', async (c) => {
         
         // Add file URL to result data
         result_data.file_url = uploadResult.publicUrl;
+        console.log('File uploaded successfully:', uploadResult.publicUrl);
       } catch (uploadError) {
         console.error('Error uploading results file:', uploadError);
-        // Continue without file if upload fails
+        return c.json({
+          error: 'Failed to upload file',
+          details: uploadError.message
+        }, 500);
       }
     }
     
@@ -2750,7 +2971,9 @@ app.post('/students/:id/upload-results', async (c) => {
     
     return c.json({
       message: 'Student results uploaded successfully',
-      result: rows[0]
+      result: rows[0],
+      file_uploaded: !!file,
+      file_url: result_data.file_url || null
     });
   } catch (error) {
     console.error('Error uploading student results:', error);
@@ -2763,29 +2986,103 @@ app.post('/students/:id/upload-results', async (c) => {
 });
 
 // Add a new endpoint for timetable uploads
-
 app.post('/upload-timetable', async (c) => {
   try {
-    const formData = await c.req.parseBody();
-    const file = formData['file'];
-    const course = formData['course'];
-    const semester = formData['semester'];
+    console.log('Timetable upload request received');
     
-    if (!file) {
-      return c.json({ error: 'No file uploaded' }, 400);
+    // Check if the request is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    console.log('Request content-type:', contentType);
+    
+    if (!contentType.includes('multipart/form-data')) {
+      return c.json({
+        error: 'Invalid content type',
+        details: 'This endpoint requires multipart/form-data'
+      }, 400);
     }
+    
+    // Parse multipart form data with error handling
+    let formData;
+    try {
+      formData = await c.req.parseBody();
+      console.log('Form data parsed successfully, keys:', Object.keys(formData));
+    } catch (parseError) {
+      console.error('Error parsing form data:', parseError);
+      return c.json({
+        error: 'Failed to process form data',
+        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
+        originalError: parseError.message
+      }, 400);
+    }
+    
+    // Validate form data
+    if (!formData || typeof formData !== 'object') {
+      return c.json({
+        error: 'Invalid form data',
+        details: 'Failed to parse multipart form data properly'
+      }, 400);
+    }
+    
+    // Extract and validate file
+    const file = formData['file'] || formData.file;
+    if (!file) {
+      return c.json({ 
+        error: 'No file uploaded',
+        details: 'A file is required for timetable upload'
+      }, 400);
+    }
+    
+    // Validate file properties
+    if (!file.name || !file.type) {
+      return c.json({
+        error: 'Invalid file',
+        details: 'Uploaded file is missing required properties (name or type)'
+      }, 400);
+    }
+    
+    // Extract and validate required fields
+    const course = formData['course'] || formData.course;
+    const semester = formData['semester'] || formData.semester;
     
     if (!course || !semester) {
       return c.json({ 
         error: 'Missing required fields', 
-        details: 'Course and semester are required' 
+        details: 'Course and semester are required',
+        received: {
+          course: course || 'missing',
+          semester: semester || 'missing'
+        }
       }, 400);
     }
     
+    // Validate field formats
+    if (typeof course !== 'string' || course.trim().length === 0) {
+      return c.json({
+        error: 'Invalid course',
+        details: 'Course must be a non-empty string'
+      }, 400);
+    }
+    
+    if (typeof semester !== 'string' || semester.trim().length === 0) {
+      return c.json({
+        error: 'Invalid semester',
+        details: 'Semester must be a non-empty string'
+      }, 400);
+    }
+    
+    console.log('Timetable upload details:', {
+      course: course.trim(),
+      semester: semester.trim(),
+      file_name: file.name,
+      file_type: file.type,
+      file_size: file.size || (file.data ? file.data.length : 'unknown')
+    });
+    
+    // Upload file to Supabase
     const uploadResult = await uploadFileToSupabase(
       file, 
       'Timetables', 
-      `${course}_${semester}`
+      `${course.trim()}_${semester.trim()}`
     );
     
     // Store timetable reference in database
@@ -2795,22 +3092,25 @@ app.post('/upload-timetable', async (c) => {
        VALUES ($1, $2, $3, $4) 
        RETURNING *`,
       [
-        course, 
-        semester, 
+        course.trim(), 
+        semester.trim(), 
         uploadResult.publicUrl, 
-        { file_path: uploadResult.filePath }
+        JSON.stringify({ file_path: uploadResult.filePath, file_name: file.name })
       ]
     );
     
     return c.json({ 
       message: 'Timetable uploaded successfully', 
-      timetable: rows[0] 
+      timetable: rows[0],
+      file_name: file.name,
+      url: uploadResult.publicUrl
     });
   } catch (error) {
     console.error('Error uploading timetable:', error);
     return c.json({ 
       error: 'Failed to upload timetable', 
-      details: error.message 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 500);
   }
 });
