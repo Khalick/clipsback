@@ -105,18 +105,47 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
   // Get file data based on what format we received
   let fileData, fileName, fileType;
   
+  console.log('Processing file for upload:', {
+    fileType: typeof file,
+    isFileInstance: file instanceof File,
+    hasData: !!file.data,
+    hasSize: !!file.size,
+    fileName: file.name,
+    fileTypeProp: file.type
+  });
+  
   if (file instanceof File) {
     // Standard File object from Hono
     fileData = await file.arrayBuffer();
     fileName = file.name;
     fileType = file.type;
+    console.log('Using File instance method');
   } else if (file.data) {
     // Custom object with data property
     fileData = file.data;
     fileName = file.name;
     fileType = file.type;
+    console.log('Using data property method');
+  } else if (file.size && file.stream) {
+    // Handle File-like objects that might have stream property
+    try {
+      fileData = await file.arrayBuffer();
+      fileName = file.name;
+      fileType = file.type;
+      console.log('Using stream/arrayBuffer method');
+    } catch (streamError) {
+      console.error('Error reading file stream:', streamError);
+      throw new Error('Failed to read file data from stream');
+    }
   } else {
-    throw new Error('Invalid file format provided');
+    console.error('Invalid file format:', {
+      hasData: !!file.data,
+      hasSize: !!file.size,
+      hasStream: !!file.stream,
+      hasArrayBuffer: typeof file.arrayBuffer === 'function',
+      keys: Object.keys(file)
+    });
+    throw new Error('Invalid file format provided - file must have data property, be a File instance, or have arrayBuffer method');
   }
 
   const uploadPath = `${folder}/${prefix}_${Date.now()}_${fileName}`;
@@ -2400,12 +2429,21 @@ app.post('/exam-cards', async (c) => {
         
         // Handle file upload if present
         const file = formData.file;
-        if (file && file.data) {
+        console.log('File detection debug:', {
+          file: file ? 'present' : 'missing',
+          hasData: file && file.data ? 'yes' : 'no',
+          hasSize: file && file.size ? `${file.size} bytes` : 'no size',
+          fileType: file ? typeof file : 'N/A',
+          fileKeys: file && typeof file === 'object' ? Object.keys(file) : 'N/A'
+        });
+        
+        if (file && (file.data || (file.size && file.size > 0) || file instanceof File)) {
           console.log('File included in request, uploading...');
           console.log('File details:', {
             name: file.name,
             type: file.type,
-            size: file.data ? file.data.length : 'unknown'
+            size: file.size || (file.data ? file.data.length : 'unknown'),
+            constructor: file.constructor ? file.constructor.name : 'unknown'
           });
           
           try {
@@ -2427,7 +2465,11 @@ app.post('/exam-cards', async (c) => {
         } else if (!file_url) {
           return c.json({
             error: 'Missing file or file URL',
-            details: 'Either upload a file or provide a file URL'
+            details: 'Either upload a file or provide a file URL',
+            debug: process.env.NODE_ENV === 'development' ? {
+              received_file: file ? 'file object present but invalid' : 'no file',
+              received_file_url: file_url || 'no file_url'
+            } : undefined
           }, 400);
         }
       } catch (formError) {
@@ -2438,22 +2480,15 @@ app.post('/exam-cards', async (c) => {
           stack: process.env.NODE_ENV === 'development' ? formError.stack : undefined
         });
         
-        // Provide more specific error messages based on error type
-        let errorMessage = 'Failed to process form data';
-        let errorDetails = formError.message;
-        
-        if (formError.message.includes('parseBody')) {
-          errorMessage = 'Form data parsing failed';
-          errorDetails = 'The multipart form data could not be parsed. Ensure the content-type header is set correctly and the form data is properly formatted.';
-        } else if (formError.message.includes('FormData')) {
-          errorMessage = 'Invalid form data format';
-          errorDetails = 'The form data format is invalid. Make sure you are sending multipart/form-data with the correct field names.';
-        }
-        
         return c.json({
-          error: errorMessage,
-          details: errorDetails,
-          help: 'Make sure you are sending a properly formatted multipart/form-data request with registration_number and either a file or file_url field'
+          error: 'Failed to process form data',
+          details: formError.message,
+          help: 'Make sure you are sending a properly formatted multipart/form-data request with registration_number and either a file or file_url field',
+          debug: process.env.NODE_ENV === 'development' ? {
+            errorName: formError.name,
+            contentType: contentType,
+            headers: Object.fromEntries(c.req.raw.headers.entries())
+          } : undefined
         }, 400);
       }
     } else {
