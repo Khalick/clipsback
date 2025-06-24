@@ -763,6 +763,11 @@ POST /fees-structure
 POST /fees-statement
 ```
 
+##### Fees Receipt Upload
+```
+POST /fees-receipt
+```
+
 ##### Results Upload
 ```
 POST /results
@@ -851,3 +856,256 @@ You can test the new unified upload system at: `/test-unified-upload`
 # Legacy API Documentation
 
 ## Authentication
+
+## Unit Allocation System
+
+The API now supports a comprehensive unit allocation system where admins can allocate units to students, and students can register those allocated units in their portal.
+
+### Admin Unit Management
+
+#### Get All Units
+```
+GET /units
+```
+
+**Response:**
+```json
+[
+  {
+    "id": "uuid_here",
+    "unit_name": "Introduction to Programming",
+    "unit_code": "CS101"
+  }
+]
+```
+
+#### Create Unit
+```
+POST /units
+```
+
+**Request Body:**
+```json
+{
+  "unit_name": "Data Structures",
+  "unit_code": "CS102"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Unit created successfully",
+  "unit": {
+    "id": "uuid_here",
+    "unit_name": "Data Structures",
+    "unit_code": "CS102"
+  }
+}
+```
+
+### Unit Allocation (Admin Functions)
+
+#### Allocate Units to Student by ID
+```
+POST /students/:studentId/allocate-units
+```
+
+**Request Body:**
+```json
+{
+  "unit_ids": ["unit_uuid_1", "unit_uuid_2"],
+  "semester": 1,
+  "academic_year": "2024/2025",
+  "notes": "Core units for Computer Science"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Unit allocation completed",
+  "student": {
+    "id": "student_uuid",
+    "registration_number": "STU001",
+    "name": "John Doe"
+  },
+  "allocated_units": [
+    {
+      "id": "allocation_uuid",
+      "student_id": "student_uuid",
+      "unit_id": "unit_uuid_1",
+      "semester": 1,
+      "academic_year": "2024/2025",
+      "status": "allocated",
+      "unit_name": "Introduction to Programming",
+      "unit_code": "CS101"
+    }
+  ],
+  "summary": {
+    "total_requested": 2,
+    "successfully_allocated": 1,
+    "errors": 1
+  }
+}
+```
+
+#### Allocate Units to Student by Registration Number
+```
+POST /students/registration/:regNumber/allocate-units
+```
+
+**Request Body:** (Same as above)
+
+### Unit Allocation Viewing
+
+#### Get Allocated Units for Student by ID
+```
+GET /students/:studentId/allocated-units?semester=1&status=allocated
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "allocation_uuid",
+      "student_id": "student_uuid",
+      "unit_id": "unit_uuid",
+      "semester": 1,
+      "academic_year": "2024/2025",
+      "status": "allocated",
+      "allocated_at": "2023-01-01T00:00:00Z",
+      "unit_name": "Introduction to Programming",
+      "unit_code": "CS101",
+      "student_name": "John Doe",
+      "registration_number": "STU001"
+    }
+  ],
+  "count": 1
+}
+```
+
+#### Get Allocated Units by Registration Number
+```
+GET /students/registration/:regNumber/allocated-units?semester=1&status=allocated
+```
+
+**Response:** (Same as above)
+
+### Student Unit Registration
+
+#### Register Allocated Unit by Student ID
+```
+POST /students/:studentId/register-allocated-unit
+```
+
+**Request Body:**
+```json
+{
+  "allocated_unit_id": "allocation_uuid"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Unit registered successfully",
+  "registered_unit": {
+    "id": "registered_unit_uuid",
+    "student_id": "student_uuid",
+    "unit_name": "Introduction to Programming",
+    "unit_code": "CS101",
+    "status": "registered"
+  },
+  "student_registration": "STU001"
+}
+```
+
+#### Register Allocated Unit by Registration Number
+```
+POST /students/registration/:regNumber/register-allocated-unit
+```
+
+**Request Body:** (Same as above)
+
+### Admin Management Functions
+
+#### Get All Allocations (Admin Overview)
+```
+GET /allocated-units?semester=1&status=allocated
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "allocation_uuid",
+      "student_id": "student_uuid",
+      "unit_id": "unit_uuid",
+      "semester": 1,
+      "academic_year": "2024/2025",
+      "status": "allocated",
+      "allocated_at": "2023-01-01T00:00:00Z",
+      "unit_name": "Introduction to Programming",
+      "unit_code": "CS101",
+      "student_name": "John Doe",
+      "registration_number": "STU001",
+      "course": "Computer Science",
+      "level_of_study": "Undergraduate"
+    }
+  ],
+  "count": 1,
+  "statistics": {
+    "total_allocations": "10",
+    "pending_registrations": "5",
+    "registered": "4",
+    "cancelled": "1"
+  }
+}
+```
+
+#### Cancel Unit Allocation
+```
+DELETE /allocated-units/:allocationId
+```
+
+**Response:**
+```json
+{
+  "message": "Unit allocation cancelled successfully",
+  "cancelled_allocation": {
+    "id": "allocation_uuid",
+    "status": "cancelled",
+    "unit_name": "Introduction to Programming",
+    "unit_code": "CS101",
+    "student_name": "John Doe",
+    "registration_number": "STU001"
+  }
+}
+```
+
+### Query Parameters
+
+- `semester`: Filter by semester (1 or 2)
+- `academic_year`: Filter by academic year (e.g., "2024/2025")
+- `status`: Filter by status ("allocated", "registered", "cancelled")
+- `student_id`: Filter by student ID
+- `unit_id`: Filter by unit ID
+
+### Unit Allocation Workflow
+
+1. **Admin creates units** using `POST /units`
+2. **Admin allocates units to students** using `POST /students/:studentId/allocate-units`
+3. **Students view their allocated units** using `GET /students/registration/:regNumber/allocated-units`
+4. **Students register allocated units** using `POST /students/registration/:regNumber/register-allocated-unit`
+5. **Admin monitors allocation status** using `GET /allocated-units`
+
+### Status Flow
+
+- `allocated`: Unit is available for student registration
+- `registered`: Student has successfully registered the unit
+- `cancelled`: Admin has cancelled the allocation

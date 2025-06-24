@@ -7,6 +7,8 @@ import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { validator } from 'hono/validator';
+import fs from 'fs/promises';
+import path from 'path';
 
 const app = new Hono();
 
@@ -163,10 +165,10 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
 
   const uploadPath = `${folder}/${prefix}_${Date.now()}_${fileName}`;
   
-  console.log(`Uploading ${fileName} to ${folder} folder in clipstech bucket...`);
+  console.log(`Uploading ${fileName} to ${folder} folder in student-documents bucket...`);
   
   const { data, error } = await supabase.storage
-    .from('clipstech')
+    .from('student-documents')
     .upload(uploadPath, fileData, { contentType: fileType });
     
   if (error) {
@@ -176,7 +178,7 @@ async function uploadFileToSupabase(file, folder, prefix = '') {
 
   // Get the public URL
   const { data: urlData } = supabase.storage
-    .from('clipstech')
+    .from('student-documents')
     .getPublicUrl(uploadPath);
   
   console.log(`File uploaded successfully to ${folder} folder`);
@@ -712,6 +714,9 @@ app.delete('/students/:id/academic-leave', async (c) => {
 // NEW UNIFIED DOCUMENT UPLOAD SYSTEM
 // =============================================================================
 
+// Serve uploaded files from local storage
+app.use('/uploads/*', serveStatic({ root: './uploads' }));
+
 // Validation middleware for file upload
 const fileUploadValidator = validator('form', (value, c) => {
   const registrationNumber = value['registrationNumber']
@@ -729,46 +734,98 @@ const fileUploadValidator = validator('form', (value, c) => {
   if (file.size > 10 * 1024 * 1024) {
     return c.json({ error: 'File size must be less than 10MB' }, 400)
   }
-
   return {
     registrationNumber: registrationNumber.trim(),
     file: file
   }
 })
 
-// Generic function to handle file upload
+// Generic function to handle file upload with fallback to local storage
 async function handleFileUpload(
   registrationNumber,
   file,
   documentType
 ) {
   try {
+    console.log(`Handling file upload for ${registrationNumber}, document type: ${documentType}`)
+    
     // Generate unique filename
     const fileExtension = file.name.split('.').pop()
     const fileName = `${documentType}/${registrationNumber}_${Date.now()}.${fileExtension}`
+    
+    let fileUrl = null
+    let storageMethod = 'unknown'
 
-    // Convert file to buffer
-    const fileBuffer = await file.arrayBuffer()
-    const uint8Array = new Uint8Array(fileBuffer)
+    // Check if Supabase is properly configured
+    const isSupabaseConfigured = process.env.SUPABASE_URL && 
+                                 process.env.SUPABASE_SERVICE_ROLE_KEY && 
+                                 process.env.SUPABASE_URL !== 'your_supabase_url'
 
-    // Upload to Supabase storage
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('student-documents')
-      .upload(fileName, uint8Array, {
-        contentType: file.type,
-        upsert: false
-      })
+    if (isSupabaseConfigured) {
+      try {
+        console.log('Attempting Supabase upload...')
+        
+        // Convert file to buffer
+        const fileBuffer = await file.arrayBuffer()
+        const uint8Array = new Uint8Array(fileBuffer)
 
-    if (uploadError) {
-      throw new Error(`Upload failed: ${uploadError.message}`)
+        // First, check if the bucket exists and is accessible
+        const { data: buckets, error: listError } = await supabase.storage.listBuckets()
+        
+        if (listError) {
+          console.warn('Error listing Supabase buckets:', listError.message)
+          throw new Error(`Bucket access error: ${listError.message}`)
+        }
+
+        const studentDocsBucket = buckets?.find(bucket => bucket.name === 'student-documents')
+        if (!studentDocsBucket) {
+          console.warn('student-documents bucket not found. Available buckets:', buckets?.map(b => b.name))
+          
+          // Try to create the bucket
+          const { error: createError } = await supabase.storage.createBucket('student-documents', {
+            public: true,
+            fileSizeLimit: 10485760 // 10MB
+          })
+          
+          if (createError) {
+            console.warn('Failed to create bucket:', createError.message)
+            throw new Error(`Bucket creation failed: ${createError.message}`)
+          }
+          
+          console.log('Successfully created student-documents bucket')
+        }
+
+        // Upload to Supabase storage
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('student-documents')
+          .upload(fileName, uint8Array, {
+            contentType: file.type,
+            upsert: false
+          })
+
+        if (uploadError) {
+          throw new Error(`Upload failed: ${uploadError.message}`)
+        }
+
+        // Get public URL
+        const { data: urlData } = supabase.storage
+          .from('student-documents')
+          .getPublicUrl(fileName)
+
+        fileUrl = urlData.publicUrl
+        storageMethod = 'supabase'
+        console.log('Successfully uploaded to Supabase')
+
+      } catch (supabaseError) {
+        console.warn('Supabase upload failed, falling back to local storage:', supabaseError.message)
+        fileUrl = await saveFileLocally(file, fileName)
+        storageMethod = 'local'
+      }
+    } else {
+      console.log('Supabase not configured, using local storage')
+      fileUrl = await saveFileLocally(file, fileName)
+      storageMethod = 'local'
     }
-
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from('student-documents')
-      .getPublicUrl(fileName)
-
-    const fileUrl = urlData.publicUrl
 
     // Insert record into database
     const { rows } = await pool.query(
@@ -787,13 +844,28 @@ async function handleFileUpload(
     )
 
     if (rows.length === 0) {
-      // If database insert fails, delete the uploaded file
-      await supabase.storage
-        .from('student-documents')
-        .remove([fileName])
+      // If database insert fails, clean up the uploaded file
+      if (storageMethod === 'supabase') {
+        try {
+          await supabase.storage
+            .from('student-documents')
+            .remove([fileName])
+        } catch (cleanupError) {
+          console.warn('Failed to cleanup Supabase file after DB error:', cleanupError.message)
+        }
+      } else if (storageMethod === 'local') {
+        try {
+          const localPath = path.join(process.cwd(), 'uploads', fileName)
+          await fs.unlink(localPath)
+        } catch (cleanupError) {
+          console.warn('Failed to cleanup local file after DB error:', cleanupError.message)
+        }
+      }
       
       throw new Error('Database insertion failed')
     }
+
+    console.log(`File uploaded successfully using ${storageMethod} storage`)
 
     return {
       success: true,
@@ -804,11 +876,38 @@ async function handleFileUpload(
         fileUrl,
         fileName: file.name,
         fileSize: file.size,
-        uploadedAt: rows[0].uploaded_at
+        uploadedAt: rows[0].uploaded_at,
+        storageMethod
       }
     }
   } catch (error) {
+    console.error('File upload error:', error)
     throw error
+  }
+}
+
+// Helper function to save files locally
+async function saveFileLocally(file, fileName) {
+  try {
+    // Create uploads directory structure
+    const uploadsDir = path.join(process.cwd(), 'uploads')
+    const documentDir = path.dirname(path.join(uploadsDir, fileName))
+    
+    // Ensure directory exists
+    await fs.mkdir(documentDir, { recursive: true })
+    
+    // Convert file to buffer and save
+    const fileBuffer = await file.arrayBuffer()
+    const uint8Array = new Uint8Array(fileBuffer)
+    const filePath = path.join(uploadsDir, fileName)
+    
+    await fs.writeFile(filePath, uint8Array)
+    
+    // Return a URL that can be served by the application
+    return `/uploads/${fileName}`
+  } catch (error) {
+    console.error('Local file save error:', error)
+    throw new Error(`Local storage failed: ${error.message}`)
   }
 }
 
@@ -872,6 +971,26 @@ app.post('/fees-statement', fileUploadValidator, async (c) => {
   }
 })
 
+// Fees Receipt upload route
+app.post('/fees-receipt', fileUploadValidator, async (c) => {
+  try {
+    const { registrationNumber, file } = c.req.valid('form')
+    
+    const result = await handleFileUpload(registrationNumber, file, 'fees-receipt')
+    
+    return c.json({
+      message: 'Fees receipt uploaded successfully',
+      ...result
+    }, 201)
+  } catch (error) {
+    console.error('Fees receipt upload error:', error)
+    return c.json({
+      error: 'Failed to upload fees receipt',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
 // Results upload route
 app.post('/results', fileUploadValidator, async (c) => {
   try {
@@ -911,6 +1030,87 @@ app.post('/timetable', fileUploadValidator, async (c) => {
     }, 500)
   }
 })
+
+// Register unit for student endpoint
+app.post('/units/register', async (c) => {
+  try {
+    const body = await c.req.json();
+    console.log('Unit registration request:', body);
+    
+    const { student_reg, unit_name, unit_code, status = 'active' } = body;
+    
+    if (!student_reg || !unit_name || !unit_code) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Student registration number, unit name, and unit code are required' 
+      }, 400);
+    }
+
+    // First, find the student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [student_reg]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    const student_id = studentRows[0].id;
+
+    // Check if the unit exists in the units table, if not create it
+    let { rows: unitRows } = await pool.query(
+      'SELECT id FROM units WHERE unit_code = $1',
+      [unit_code]
+    );
+    
+    if (unitRows.length === 0) {
+      // Create the unit if it doesn't exist
+      await pool.query(
+        'INSERT INTO units (unit_name, unit_code) VALUES ($1, $2)',
+        [unit_name, unit_code]
+      );
+    }
+
+    // Check if the student is already registered for this unit
+    const { rows: existingRows } = await pool.query(
+      'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
+      [student_id, unit_code]
+    );
+    
+    if (existingRows.length > 0) {
+      return c.json({ 
+        error: 'Unit already registered', 
+        details: 'Student is already registered for this unit' 
+      }, 409);
+    }
+
+    // Register the unit for the student
+    const { rows } = await pool.query(
+      'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
+      [student_id, unit_name, unit_code, status]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error('Failed to register unit');
+    }
+    
+    return c.json({ 
+      message: 'Unit registered successfully for student',
+      registered_unit: rows[0],
+      student_registration: student_reg
+    });
+  } catch (error) {
+    console.error('Error registering unit:', error);
+    return c.json({ 
+      error: 'Failed to register unit', 
+      details: error.message 
+    }, 500);
+  }
+});
 
 // Health check route
 app.get('/health', (c) => {
@@ -1110,6 +1310,101 @@ app.post('/auth/student-login', async (c) => {
   }
 });
 
+// Admin login endpoint
+app.post('/auth/admin-login', async (c) => {
+  try {
+    const body = await c.req.json();
+    console.log('Admin login attempt:', { username: body.username });
+    
+    const { username, password } = body;
+    
+    if (!username || !password) {
+      return c.json({ error: 'Username and password required' }, 400);
+    }
+
+    const { rows } = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
+    if (rows.length === 0) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    const admin = rows[0];
+    
+    // Compare password with hash
+    const isAuthenticated = await bcrypt.compare(password, admin.password_hash);
+    
+    if (!isAuthenticated) {
+      return c.json({ error: 'Invalid credentials' }, 401);
+    }
+    
+    const token = jwt.sign(
+      { username: admin.username, admin_id: admin.id, type: 'admin' }, 
+      process.env.SECRET_KEY, 
+      { expiresIn: '8h' }
+    );
+      return c.json({ 
+      token, 
+      adminId: admin.id,
+      username: admin.username
+    });
+  } catch (error) {
+    console.error('Admin login error:', error);
+    return c.json({ 
+      error: 'Server error during admin login', 
+      details: error.message
+    }, 500);
+  }
+});
+
+// Admin token verification endpoint
+app.get('/admin/verify-token', async (c) => {
+  try {
+    // Get token from Authorization header
+    const authHeader = c.req.header('authorization');
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return c.json({ error: 'No token provided' }, 401);
+    }
+    
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
+    
+    // Verify the JWT token
+    const decoded = jwt.verify(token, process.env.SECRET_KEY);
+    
+    // Check if it's an admin token
+    if (decoded.type !== 'admin') {
+      return c.json({ error: 'Invalid token type' }, 401);
+    }
+    
+    // Verify admin still exists in database
+    const { rows } = await pool.query('SELECT id, username FROM admins WHERE id = $1', [decoded.admin_id]);
+    
+    if (rows.length === 0) {
+      return c.json({ error: 'Admin not found' }, 401);
+    }
+    
+    return c.json({ 
+      valid: true,
+      admin: {
+        id: rows[0].id,
+        username: rows[0].username
+      }
+    });
+  } catch (error) {
+    console.error('Token verification error:', error);
+    
+    if (error.name === 'JsonWebTokenError') {
+      return c.json({ error: 'Invalid token' }, 401);
+    } else if (error.name === 'TokenExpiredError') {
+      return c.json({ error: 'Token expired' }, 401);
+    }
+    
+    return c.json({ 
+      error: 'Token verification failed', 
+      details: error.message 
+    }, 500);
+  }
+});
+
 // Student forgot password endpoint
 app.post('/student/auth/forgot-password', async (c) => {
   try {
@@ -1247,10 +1542,10 @@ app.post('/exam-cards', async (c) => {
         // Upload to Supabase with custom expiry
         const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${fileName}`;
         
-        console.log(`Uploading binary file to exam_cards folder in clipstech bucket...`);
+        console.log(`Uploading binary file to exam_cards folder in student-documents bucket...`);
         
         const { data, error } = await supabase.storage
-          .from('clipstech')
+          .from('student-documents')
           .upload(uploadPath, binaryData, { 
             contentType: fileType,
             cacheControl: '31536000' // 1 year cache
@@ -1264,7 +1559,7 @@ app.post('/exam-cards', async (c) => {
         // Get the public URL with custom expiry (1 year from now)
         const expiresIn = 31536000; // 1 year in seconds
         const { data: urlData, error: urlError } = await supabase.storage
-          .from('clipstech')
+          .from('student-documents')
           .createSignedUrl(uploadPath, expiresIn);
           
         let file_url;
@@ -1272,7 +1567,7 @@ app.post('/exam-cards', async (c) => {
           console.error('Error creating signed URL:', urlError);
           // Fallback to public URL if signed URL fails
           const { data: publicUrlData } = supabase.storage
-            .from('clipstech')
+            .from('student-documents')
             .getPublicUrl(uploadPath);
           file_url = publicUrlData.publicUrl;
         } else {
@@ -1292,11 +1587,11 @@ app.post('/exam-cards', async (c) => {
           note: 'Use the file_url and registration_number to save the exam card record'
         });
         
-      } catch (uploadError) {
-        console.error('Error uploading binary file for exam card:', uploadError);
+      } catch (supabaseError) {
+        console.error('Supabase upload error:', supabaseError);
         return c.json({
           error: 'Failed to upload binary file for exam card',
-          details: uploadError.message
+          details: supabaseError.message
         }, 500);
       }
     } 
@@ -1350,10 +1645,10 @@ app.post('/exam-cards', async (c) => {
             // Upload to Supabase with custom expiry (e.g., 1 year = 31536000 seconds)
             const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
             
-            console.log(`Uploading ${file.name} to exam_cards folder in clipstech bucket...`);
+            console.log(`Uploading ${file.name} to exam_cards folder in student-documents bucket...`);
             
             const { data, error } = await supabase.storage
-              .from('clipstech')
+              .from('student-documents')
               .upload(uploadPath, fileData, { 
                 contentType: file.type,
                 cacheControl: '31536000' // 1 year cache
@@ -1367,14 +1662,14 @@ app.post('/exam-cards', async (c) => {
             // Get the public URL with custom expiry (1 year from now)
             const expiresIn = 31536000; // 1 year in seconds
             const { data: urlData, error: urlError } = await supabase.storage
-              .from('clipstech')
+              .from('student-documents')
               .createSignedUrl(uploadPath, expiresIn);
               
             if (urlError) {
               console.error('Error creating signed URL:', urlError);
               // Fallback to public URL if signed URL fails
               const { data: publicUrlData } = supabase.storage
-                .from('clipstech')
+                .from('student-documents')
                 .getPublicUrl(uploadPath);
               file_url = publicUrlData.publicUrl;
             } else {
@@ -1554,10 +1849,10 @@ app.post('/exam-cards/:regNumber', async (c) => {
         // Upload to Supabase with custom expiry
         const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${fileName}`;
         
-        console.log(`Uploading binary file to exam_cards folder in clipstech bucket...`);
+        console.log(`Uploading binary file to exam_cards folder in student-documents bucket...`);
         
         const { data, error } = await supabase.storage
-          .from('clipstech')
+          .from('student-documents')
           .upload(uploadPath, binaryData, { 
             contentType: fileType,
             cacheControl: '31536000' // 1 year cache
@@ -1571,7 +1866,7 @@ app.post('/exam-cards/:regNumber', async (c) => {
         // Get the public URL with custom expiry (1 year from now)
         const expiresIn = 31536000; // 1 year in seconds
         const { data: urlData, error: urlError } = await supabase.storage
-          .from('clipstech')
+          .from('student-documents')
           .createSignedUrl(uploadPath, expiresIn);
           
         let file_url;
@@ -1579,7 +1874,7 @@ app.post('/exam-cards/:regNumber', async (c) => {
           console.error('Error creating signed URL:', urlError);
           // Fallback to public URL if signed URL fails
           const { data: publicUrlData } = supabase.storage
-            .from('clipstech')
+            .from('student-documents')
             .getPublicUrl(uploadPath);
           file_url = publicUrlData.publicUrl;
         } else {
@@ -1622,7 +1917,7 @@ app.post('/exam-cards/:regNumber', async (c) => {
           details: uploadError.message
         }, 500);
       }
-    }
+    } 
     // Handle multipart/form-data (legacy support)
     else if (contentType.includes('multipart/form-data')) {
       try {
@@ -1732,417 +2027,173 @@ app.post('/students/:id/fee-receipt', async (c) => {
   return c.json({ message: 'Fee receipt uploaded.' });
 });
 
-// Upload fee statement (admin)
-app.post('/students/:id/upload-fee-statement', async (c) => {
+// Upload fee statement (admin) - Updated to use modern pattern
+app.post('/students/:id/upload-fee-statement', fileUploadValidator, async (c) => {
   try {
     const studentId = c.req.param('id');
+    const { registrationNumber, file } = c.req.valid('form');
+    
     console.log('Uploading fee statement for student:', studentId);
     
-    // Check if the request is multipart/form-data
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
-    
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires multipart/form-data'
-      }, 400);
-    }
-    
-    // Parse multipart form data with error handling
-    let formData;
-    try {
-      formData = await c.req.parseBody();
-      console.log('Form data parsed successfully, keys:', Object.keys(formData));
-    } catch (parseError) {
-      console.error('Error parsing form data:', parseError);
-      return c.json({
-        error: 'Failed to process form data',
-        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
-        originalError: parseError.message
-      }, 400);
-    }
-    
-    // Validate form data
-    if (!formData || typeof formData !== 'object') {
-      return c.json({
-        error: 'Invalid form data',
-        details: 'Failed to parse multipart form data properly'
-      }, 400);
-    }
-    
-    // Extract and validate file
-    const file = formData['file'] || formData.file;
-    if (!file) {
-      return c.json({ 
-        error: 'No file uploaded',
-        details: 'A file is required for fee statement upload'
-      }, 400);
-    }
-    
-    // Validate file properties
-    if (!file.name || !file.type) {
-      return c.json({
-        error: 'Invalid file',
-        details: 'Uploaded file is missing required properties (name or type)'
-      }, 400);
-    }
-    
-    console.log('Fee statement file details:', {
-      name: file.name,
-      type: file.type,
-      size: file.size || (file.data ? file.data.length : 'unknown')
-    });
-    
-    // Upload file to Supabase
-    const uploadResult = await uploadFileToSupabase(
-      file, 
-      'fees_statements', 
-      `student_${studentId}`
+    // Get student info to verify
+    const { rows: studentRows } = await pool.query(
+      'SELECT registration_number FROM students WHERE id = $1',
+      [studentId]
     );
     
-    // Insert into database
+    if (studentRows.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Upload file using the generic handler
+    const result = await handleFileUpload(registrationNumber, file, 'fees-statement');
+    
+    // Also insert into the legacy finance table for compatibility
     await pool.query(
       'INSERT INTO finance (student_id, statement, statement_url) VALUES ($1, $2, $3)', 
-      [studentId, formData.statement || 'Fee Statement', uploadResult.publicUrl]
+      [studentId, 'Fee Statement', result.data.fileUrl]
     );
     
     return c.json({ 
       message: 'Fee statement uploaded successfully', 
-      url: uploadResult.publicUrl,
-      file_name: file.name
+      url: result.data.fileUrl,
+      file_name: file.name,
+      ...result
     });
   } catch (error) {
     console.error('Error uploading fee statement:', error);
     return c.json({ 
       error: 'Failed to upload fee statement', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: error instanceof Error ? error.message : 'Unknown error'
     }, 500);
   }
 });
 
-// Upload fee receipt (admin)
-app.post('/students/:id/upload-fee-receipt', async (c) => {
+// Upload fee receipt (admin) - Updated to use modern pattern
+app.post('/students/:id/upload-fee-receipt', fileUploadValidator, async (c) => {
   try {
     const studentId = c.req.param('id');
+    const { registrationNumber, file } = c.req.valid('form');
+    
     console.log('Uploading fee receipt for student:', studentId);
     
-    // Check if the request is multipart/form-data
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
-    
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires multipart/form-data'
-      }, 400);
-    }
-    
-    // Parse multipart form data with error handling
-    let formData;
-    try {
-      formData = await c.req.parseBody();
-      console.log('Form data parsed successfully, keys:', Object.keys(formData));
-    } catch (parseError) {
-      console.error('Error parsing form data:', parseError);
-      return c.json({
-        error: 'Failed to process form data',
-        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
-        originalError: parseError.message
-      }, 400);
-    }
-    
-    // Validate form data
-    if (!formData || typeof formData !== 'object') {
-      return c.json({
-        error: 'Invalid form data',
-        details: 'Failed to parse multipart form data properly'
-      }, 400);
-    }
-    
-    // Extract and validate file
-    const file = formData['file'] || formData.file;
-    if (!file) {
-      return c.json({ 
-        error: 'No file uploaded',
-        details: 'A file is required for fee receipt upload'
-      }, 400);
-    }
-    
-    // Validate file properties
-    if (!file.name || !file.type) {
-      return c.json({
-        error: 'Invalid file',
-        details: 'Uploaded file is missing required properties (name or type)'
-      }, 400);
-    }
-    
-    console.log('Fee receipt file details:', {
-      name: file.name,
-      type: file.type,
-      size: file.size || (file.data ? file.data.length : 'unknown')
-    });
-    
-    // Upload file to Supabase
-    const uploadResult = await uploadFileToSupabase(
-      file, 
-      'fees_statements', 
-      `student_${studentId}`
+    // Get student info to verify
+    const { rows: studentRows } = await pool.query(
+      'SELECT registration_number FROM students WHERE id = $1',
+      [studentId]
     );
     
-    // Insert into database
+    if (studentRows.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Upload file using the generic handler
+    const result = await handleFileUpload(registrationNumber, file, 'fees-receipt');
+    
+    // Also insert into the legacy finance table for compatibility
     await pool.query(
       'INSERT INTO finance (student_id, receipt_url) VALUES ($1, $2)', 
-      [studentId, uploadResult.publicUrl]
+      [studentId, result.data.fileUrl]
     );
     
     return c.json({ 
       message: 'Fee receipt uploaded successfully', 
-      url: uploadResult.publicUrl,
-      file_name: file.name
+      url: result.data.fileUrl,
+      file_name: file.name,
+      ...result
     });
   } catch (error) {
     console.error('Error uploading fee receipt:', error);
     return c.json({ 
       error: 'Failed to upload fee receipt', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: error instanceof Error ? error.message : 'Unknown error'
     }, 500);
   }
 });
 
-// Upload exam results with file (admin)
-app.post('/students/:id/upload-results', async (c) => {
+// Upload exam results with file (admin) - Updated to use modern pattern
+app.post('/students/:id/upload-results', fileUploadValidator, async (c) => {
   try {
     const studentId = c.req.param('id');
+    const { registrationNumber, file } = c.req.valid('form');
+    
     console.log('Uploading results for student:', studentId);
     
-    // Check if the request is multipart/form-data
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
+    // Get student info to verify
+    const { rows: studentRows } = await pool.query(
+      'SELECT registration_number FROM students WHERE id = $1',
+      [studentId]
+    );
     
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires multipart/form-data'
-      }, 400);
+    if (studentRows.length === 0) {
+      return c.json({ error: 'Student not found' }, 404);
     }
     
-    // Parse multipart form data with error handling
-    let formData;
-    try {
-      formData = await c.req.parseBody();
-      console.log('Form data parsed successfully, keys:', Object.keys(formData));
-    } catch (parseError) {
-      console.error('Error parsing form data:', parseError);
-      return c.json({
-        error: 'Failed to process form data',
-        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
-        originalError: parseError.message
-      }, 400);
-    }
+    // Upload file using the generic handler
+    const result = await handleFileUpload(registrationNumber, file, 'results');
     
-    // Validate form data
-    if (!formData || typeof formData !== 'object') {
-      return c.json({
-        error: 'Invalid form data',
-        details: 'Failed to parse multipart form data properly'
-      }, 400);
-    }
+    // For compatibility, also store in the legacy results table
+    // We'll use a default semester since it's not provided in the modern format
+    const defaultSemester = 'Current';
+    const result_data = {
+      file_url: result.data.fileUrl,
+      file_name: file.name,
+      file_size: file.size,
+      uploaded_at: new Date().toISOString()
+    };
     
-    // Extract and validate required fields
-    const semester = formData.semester;
-    if (!semester) {
-      return c.json({ 
-        error: 'Missing required field', 
-        details: 'Semester is required' 
-      }, 400);
-    }
-    
-    // Parse result data
-    let result_data = {};
-    try {
-      result_data = formData.result_data ? JSON.parse(formData.result_data) : {};
-    } catch (jsonError) {
-      console.error('Error parsing result_data JSON:', jsonError);
-      return c.json({
-        error: 'Invalid result data',
-        details: 'Result data must be valid JSON format'
-      }, 400);
-    }
-    
-    console.log('Results metadata:', { semester, result_data_keys: Object.keys(result_data) });
-    
-    // Handle file upload (optional)
-    const file = formData.file;
-    if (file) {
-      // Validate file properties
-      if (!file.name || !file.type) {
-        return c.json({
-          error: 'Invalid file',
-          details: 'Uploaded file is missing required properties (name or type)'
-        }, 400);
-      }
-      
-      console.log('Results file details:', {
-        name: file.name,
-        type: file.type,
-        size: file.size || (file.data ? file.data.length : 'unknown')
-      });
-      
-      try {
-        const uploadResult = await uploadFileToSupabase(
-          file, 
-          'Result-slips', 
-          `student_${studentId}_${semester}`
-        );
-        
-        // Add file URL to result data
-        result_data.file_url = uploadResult.publicUrl;
-        console.log('File uploaded successfully:', uploadResult.publicUrl);
-      } catch (uploadError) {
-        console.error('Error uploading results file:', uploadError);
-        return c.json({
-          error: 'Failed to upload file',
-          details: uploadError.message
-        }, 500);
-      }
-    }
-    
-    // Store result data in database
     const { rows } = await pool.query(
       'INSERT INTO results (student_id, semester, result_data) VALUES ($1, $2, $3) RETURNING *',
-      [studentId, semester, result_data]
+      [studentId, defaultSemester, result_data]
     );
     
     return c.json({
       message: 'Student results uploaded successfully',
       result: rows[0],
-      file_uploaded: !!file,
-      file_url: result_data.file_url || null
+      file_uploaded: true,
+      file_url: result.data.fileUrl,
+      ...result
     });
   } catch (error) {
     console.error('Error uploading student results:', error);
     return c.json({ 
       error: 'Failed to upload student results', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: error instanceof Error ? error.message : 'Unknown error'
     }, 500);
   }
 });
 
-// Add a new endpoint for timetable uploads
-app.post('/upload-timetable', async (c) => {
+// Timetable upload endpoint - Updated to use modern pattern  
+app.post('/upload-timetable', fileUploadValidator, async (c) => {
   try {
+    const { registrationNumber, file } = c.req.valid('form');
+    
     console.log('Timetable upload request received');
     
-    // Check if the request is multipart/form-data
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
+    // For timetables, we'll use the registration number as both identifier and course
+    // In a real application, you might want to extract course from the registration number
+    // or require it as a separate field
+    const course = 'General'; // Default course, could be extracted from registration number
+    const semester = 'Current'; // Default semester, could be a form field
     
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires multipart/form-data'
-      }, 400);
-    }
+    // Upload file using the generic handler
+    const result = await handleFileUpload(registrationNumber, file, 'timetable');
     
-    // Parse multipart form data with error handling
-    let formData;
-    try {
-      formData = await c.req.parseBody();
-      console.log('Form data parsed successfully, keys:', Object.keys(formData));
-    } catch (parseError) {
-      console.error('Error parsing form data:', parseError);
-      return c.json({
-        error: 'Failed to process form data',
-        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
-        originalError: parseError.message
-      }, 400);
-    }
-    
-    // Validate form data
-    if (!formData || typeof formData !== 'object') {
-      return c.json({
-        error: 'Invalid form data',
-        details: 'Failed to parse multipart form data properly'
-      }, 400);
-    }
-    
-    // Extract and validate file
-    const file = formData['file'] || formData.file;
-    if (!file) {
-      return c.json({ 
-        error: 'No file uploaded',
-        details: 'A file is required for timetable upload'
-      }, 400);
-    }
-    
-    // Validate file properties
-    if (!file.name || !file.type) {
-      return c.json({
-        error: 'Invalid file',
-        details: 'Uploaded file is missing required properties (name or type)'
-      }, 400);
-    }
-    
-    // Extract and validate required fields
-    const course = formData['course'] || formData.course;
-    const semester = formData['semester'] || formData.semester;
-    
-    if (!course || !semester) {
-      return c.json({ 
-        error: 'Missing required fields', 
-        details: 'Course and semester are required',
-        received: {
-          course: course || 'missing',
-          semester: semester || 'missing'
-        }
-      }, 400);
-    }
-    
-    // Validate field formats
-    if (typeof course !== 'string' || course.trim().length === 0) {
-      return c.json({
-        error: 'Invalid course',
-        details: 'Course must be a non-empty string'
-      }, 400);
-    }
-    
-    if (typeof semester !== 'string' || semester.trim().length === 0) {
-      return c.json({
-        error: 'Invalid semester',
-        details: 'Semester must be a non-empty string'
-      }, 400);
-    }
-    
-    console.log('Timetable upload details:', {
-      course: course.trim(),
-      semester: semester.trim(),
-      file_name: file.name,
-      file_type: file.type,
-      file_size: file.size || (file.data ? file.data.length : 'unknown')
-    });
-    
-    // Upload file to Supabase
-    const uploadResult = await uploadFileToSupabase(
-      file, 
-      'Timetables', 
-      `${course.trim()}_${semester.trim()}`
-    );
-    
-    // Store timetable reference in database
+    // Store timetable reference in database for compatibility
     const { rows } = await pool.query(
       `INSERT INTO timetables 
        (course, semester, timetable_url, timetable_data) 
        VALUES ($1, $2, $3, $4) 
        RETURNING *`,
       [
-        course.trim(), 
-        semester.trim(), 
-        uploadResult.publicUrl, 
-        JSON.stringify({ file_path: uploadResult.filePath, file_name: file.name })
+        course, 
+        semester, 
+        result.data.fileUrl, 
+        JSON.stringify({ 
+          file_path: result.data.fileUrl, 
+          file_name: file.name,
+          registration_number: registrationNumber 
+        })
       ]
     );
     
@@ -2150,14 +2201,14 @@ app.post('/upload-timetable', async (c) => {
       message: 'Timetable uploaded successfully', 
       timetable: rows[0],
       file_name: file.name,
-      url: uploadResult.publicUrl
+      url: result.data.fileUrl,
+      ...result
     });
   } catch (error) {
     console.error('Error uploading timetable:', error);
     return c.json({ 
       error: 'Failed to upload timetable', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: error instanceof Error ? error.message : 'Unknown error'
     }, 500);
   }
 });
@@ -2194,6 +2245,696 @@ app.get('/timetable/:course/:semester', async (c) => {
 app.get('/test-unified-upload', (c) => {
   return c.redirect('/test/test-unified-upload.html');
 });
+
+// =============================================================================
+// UNIT ALLOCATION SYSTEM - Admin allocates units, students register them
+// =============================================================================
+
+// Get all units (for admin to see available units to allocate)
+app.get('/units', async (c) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT * FROM units ORDER BY unit_code'
+    );
+    
+    return c.json(rows);
+  } catch (error) {
+    console.error('Error fetching units:', error);
+    return c.json({ 
+      error: 'Failed to fetch units', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Create a new unit (admin only)
+app.post('/units', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { unit_name, unit_code } = body;
+    
+    if (!unit_name || !unit_code) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Unit name and unit code are required' 
+      }, 400);
+    }
+
+    // Check if unit with same code already exists
+    const { rows: existingRows } = await pool.query(
+      'SELECT id FROM units WHERE unit_code = $1',
+      [unit_code]
+    );
+    
+    if (existingRows.length > 0) {
+      return c.json({ 
+        error: 'Unit already exists', 
+        details: 'A unit with this code already exists' 
+      }, 409);
+    }
+
+    const { rows } = await pool.query(
+      'INSERT INTO units (unit_name, unit_code) VALUES ($1, $2) RETURNING *',
+      [unit_name, unit_code]
+    );
+    
+    return c.json({ 
+      message: 'Unit created successfully',
+      unit: rows[0]
+    });
+  } catch (error) {
+    console.error('Error creating unit:', error);
+    return c.json({ 
+      error: 'Failed to create unit', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Allocate units to a student (admin function)
+app.post('/students/:studentId/allocate-units', async (c) => {
+  try {
+    const { studentId } = c.req.param();
+    const body = await c.req.json();
+    const { unit_ids, semester = 1, academic_year = '2024/2025', notes } = body;
+    
+    if (!unit_ids || !Array.isArray(unit_ids) || unit_ids.length === 0) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'unit_ids array is required and must not be empty' 
+      }, 400);
+    }
+
+    // Verify student exists
+    const { rows: studentRows } = await pool.query(
+      'SELECT id, registration_number, name FROM students WHERE id = $1',
+      [studentId]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided ID' 
+      }, 404);
+    }
+
+    const student = studentRows[0];
+    
+    // Begin transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const allocatedUnits = [];
+      const errors = [];
+      
+      for (const unit_id of unit_ids) {
+        try {
+          // Verify unit exists
+          const { rows: unitRows } = await client.query(
+            'SELECT id, unit_name, unit_code FROM units WHERE id = $1',
+            [unit_id]
+          );
+          
+          if (unitRows.length === 0) {
+            errors.push(`Unit with ID ${unit_id} not found`);
+            continue;
+          }
+          
+          const unit = unitRows[0];
+          
+          // Check if already allocated
+          const { rows: existingRows } = await client.query(
+            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4',
+            [studentId, unit_id, semester, academic_year]
+          );
+          
+          if (existingRows.length > 0) {
+            errors.push(`Unit ${unit.unit_code} (${unit.unit_name}) is already allocated to this student for this semester`);
+            continue;
+          }
+          
+          // Allocate the unit
+          const { rows: allocatedRows } = await client.query(
+            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, notes) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+            [studentId, unit_id, semester, academic_year, notes]
+          );
+          
+          allocatedUnits.push({
+            ...allocatedRows[0],
+            unit_name: unit.unit_name,
+            unit_code: unit.unit_code
+          });
+          
+        } catch (unitError) {
+          errors.push(`Error allocating unit ${unit_id}: ${unitError.message}`);
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      return c.json({ 
+        message: 'Unit allocation completed',
+        student: student,
+        allocated_units: allocatedUnits,
+        errors: errors.length > 0 ? errors : undefined,
+        summary: {
+          total_requested: unit_ids.length,
+          successfully_allocated: allocatedUnits.length,
+          errors: errors.length
+        }
+      });
+      
+    } catch (txError) {
+      await client.query('ROLLBACK');
+      throw txError;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('Error allocating units:', error);
+    return c.json({ 
+      error: 'Failed to allocate units', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Allocate units to a student by registration number (admin function)
+app.post('/students/registration/:regNumber/allocate-units', async (c) => {
+  try {
+    const { regNumber } = c.req.param();
+    
+    // Find student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [regNumber]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    // Forward to the main allocation endpoint
+    c.req.param = () => ({ studentId: studentRows[0].id });
+    return app.fetch(c.req.raw.clone().url.replace(`/registration/${regNumber}/`, `/${studentRows[0].id}/`), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.raw.body
+    }).then(res => res.json()).then(data => c.json(data));
+    
+  } catch (error) {
+    console.error('Error in registration-based allocation:', error);
+    return c.json({ 
+      error: 'Failed to allocate units', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Get allocated units for a student (student or admin can view)
+app.get('/students/:studentId/allocated-units', async (c) => {
+  try {
+    const { studentId } = c.req.param();
+    const { semester, academic_year, status } = c.req.query();
+    
+    let query = `
+      SELECT 
+        au.*,
+        u.unit_name,
+        u.unit_code,
+        s.name as student_name,
+        s.registration_number
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      JOIN students s ON au.student_id = s.id
+      WHERE au.student_id = $1
+    `;
+    
+    const params = [studentId];
+    let paramCount = 1;
+    
+    if (semester) {
+      paramCount++;
+      query += ` AND au.semester = $${paramCount}`;
+      params.push(semester);
+    }
+    
+    if (academic_year) {
+      paramCount++;
+      query += ` AND au.academic_year = $${paramCount}`;
+      params.push(academic_year);
+    }
+    
+    if (status) {
+      paramCount++;
+      query += ` AND au.status = $${paramCount}`;
+      params.push(status);
+    }
+    
+    query += ' ORDER BY au.allocated_at DESC';
+    
+    const { rows } = await pool.query(query, params);
+    
+    return c.json({
+      success: true,
+      data: rows,
+      count: rows.length
+    });
+    
+  } catch (error) {
+    console.error('Error fetching allocated units:', error);
+    return c.json({ 
+      error: 'Failed to fetch allocated units', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Get allocated units by registration number
+app.get('/students/registration/:regNumber/allocated-units', async (c) => {
+  try {
+    const { regNumber } = c.req.param();
+    
+    // Find student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [regNumber]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    // Forward to the main endpoint
+    const studentId = studentRows[0].id;
+    const { semester, academic_year, status } = c.req.query();
+    
+    let query = `
+      SELECT 
+        au.*,
+        u.unit_name,
+        u.unit_code,
+        s.name as student_name,
+        s.registration_number
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      JOIN students s ON au.student_id = s.id
+      WHERE au.student_id = $1
+    `;
+    
+    const params = [studentId];
+    let paramCount = 1;
+    
+    if (semester) {
+      paramCount++;
+      query += ` AND au.semester = $${paramCount}`;
+      params.push(semester);
+    }
+    
+    if (academic_year) {
+      paramCount++;
+      query += ` AND au.academic_year = $${paramCount}`;
+      params.push(academic_year);
+    }
+    
+    if (status) {
+      paramCount++;
+      query += ` AND au.status = $${paramCount}`;
+      params.push(status);
+    }
+    
+    query += ' ORDER BY au.allocated_at DESC';
+    
+    const { rows } = await pool.query(query, params);
+    
+    return c.json({
+      success: true,
+      data: rows,
+      count: rows.length
+    });
+    
+  } catch (error) {
+    console.error('Error fetching allocated units:', error);
+    return c.json({ 
+      error: 'Failed to fetch allocated units', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Register an allocated unit (student function)
+app.post('/students/:studentId/register-allocated-unit', async (c) => {
+  try {
+    const { studentId } = c.req.param();
+    const body = await c.req.json();
+    const { allocated_unit_id } = body;
+    
+    if (!allocated_unit_id) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'allocated_unit_id is required' 
+      }, 400);
+    }
+
+    // Verify the allocated unit exists and belongs to this student
+    const { rows: allocatedRows } = await pool.query(`
+      SELECT 
+        au.*,
+        u.unit_name,
+        u.unit_code,
+        s.registration_number
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      JOIN students s ON au.student_id = s.id
+      WHERE au.id = $1 AND au.student_id = $2 AND au.status = 'allocated'
+    `, [allocated_unit_id, studentId]);
+    
+    if (allocatedRows.length === 0) {
+      return c.json({ 
+        error: 'Allocated unit not found', 
+        details: 'No allocated unit found for this student or unit is not available for registration' 
+      }, 404);
+    }
+    
+    const allocatedUnit = allocatedRows[0];
+    
+    // Check if already registered
+    const { rows: registeredRows } = await pool.query(
+      'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
+      [studentId, allocatedUnit.unit_code]
+    );
+    
+    if (registeredRows.length > 0) {
+      return c.json({ 
+        error: 'Unit already registered', 
+        details: 'Student is already registered for this unit' 
+      }, 409);
+    }
+
+    // Begin transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Register the unit
+      const { rows: newRegistrationRows } = await client.query(
+        'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
+        [studentId, allocatedUnit.unit_name, allocatedUnit.unit_code, 'registered']
+      );
+      
+      // Update the allocated unit status
+      await client.query(
+        'UPDATE allocated_units SET status = $1 WHERE id = $2',
+        ['registered', allocated_unit_id]
+      );
+      
+      await client.query('COMMIT');
+      
+      return c.json({ 
+        message: 'Unit registered successfully',
+        registered_unit: newRegistrationRows[0],
+        student_registration: allocatedUnit.registration_number
+      });
+      
+    } catch (txError) {
+      await client.query('ROLLBACK');
+      throw txError;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('Error registering allocated unit:', error);
+    return c.json({ 
+      error: 'Failed to register unit', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Register allocated unit by registration number
+app.post('/students/registration/:regNumber/register-allocated-unit', async (c) => {
+  try {
+    const { regNumber } = c.req.param();
+    
+    // Find student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [regNumber]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    // Forward to the main registration endpoint with student ID
+    const body = await c.req.json();
+    
+    const { allocated_unit_id } = body;
+    
+    if (!allocated_unit_id) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'allocated_unit_id is required' 
+      }, 400);
+    }
+
+    const studentId = studentRows[0].id;
+
+    // Verify the allocated unit exists and belongs to this student
+    const { rows: allocatedRows } = await pool.query(`
+      SELECT 
+        au.*,
+        u.unit_name,
+        u.unit_code,
+        s.registration_number
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      JOIN students s ON au.student_id = s.id
+      WHERE au.id = $1 AND au.student_id = $2 AND au.status = 'allocated'
+    `, [allocated_unit_id, studentId]);
+    
+    if (allocatedRows.length === 0) {
+      return c.json({ 
+        error: 'Allocated unit not found', 
+        details: 'No allocated unit found for this student or unit is not available for registration' 
+      }, 404);
+    }
+    
+    const allocatedUnit = allocatedRows[0];
+    
+    // Check if already registered
+    const { rows: registeredRows } = await pool.query(
+      'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
+      [studentId, allocatedUnit.unit_code]
+    );
+    
+    if (registeredRows.length > 0) {
+      return c.json({ 
+        error: 'Unit already registered', 
+        details: 'Student is already registered for this unit' 
+      }, 409);
+    }
+
+    // Begin transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Register the unit
+      const { rows: newRegistrationRows } = await client.query(
+        'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
+        [studentId, allocatedUnit.unit_name, allocatedUnit.unit_code, 'registered']
+      );
+      
+      // Update the allocated unit status
+      await client.query(
+        'UPDATE allocated_units SET status = $1 WHERE id = $2',
+        ['registered', allocated_unit_id]
+      );
+      
+      await client.query('COMMIT');
+      
+      return c.json({ 
+        message: 'Unit registered successfully',
+        registered_unit: newRegistrationRows[0],
+        student_registration: allocatedUnit.registration_number
+      });
+      
+    } catch (txError) {
+      await client.query('ROLLBACK');
+      throw txError;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('Error registering allocated unit:', error);
+    return c.json({ 
+      error: 'Failed to register unit', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Cancel unit allocation (admin function)
+app.delete('/allocated-units/:allocationId', async (c) => {
+  try {
+    const { allocationId } = c.req.param();
+    
+    // Check if allocation exists and is not already registered
+    const { rows: allocatedRows } = await pool.query(`
+      SELECT 
+        au.*,
+        u.unit_name,
+        u.unit_code,
+        s.name as student_name,
+        s.registration_number
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      JOIN students s ON au.student_id = s.id
+      WHERE au.id = $1
+    `, [allocationId]);
+    
+    if (allocatedRows.length === 0) {
+      return c.json({ 
+        error: 'Allocation not found', 
+        details: 'No allocation found with the provided ID' 
+      }, 404);
+    }
+    
+    const allocation = allocatedRows[0];
+    
+    if (allocation.status === 'registered') {
+      return c.json({ 
+        error: 'Cannot cancel registered allocation', 
+        details: 'This unit has already been registered by the student and cannot be cancelled' 
+      }, 409);
+    }
+    
+    // Update status to cancelled instead of deleting
+    const { rows } = await pool.query(
+      'UPDATE allocated_units SET status = $1 WHERE id = $2 RETURNING *',
+      ['cancelled', allocationId]
+    );
+    
+    return c.json({ 
+      message: 'Unit allocation cancelled successfully',
+      cancelled_allocation: {
+        ...rows[0],
+        unit_name: allocation.unit_name,
+        unit_code: allocation.unit_code,
+        student_name: allocation.student_name,
+        registration_number: allocation.registration_number
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error cancelling allocation:', error);
+    return c.json({ 
+      error: 'Failed to cancel allocation', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Get all allocations (admin overview)
+app.get('/allocated-units', async (c) => {
+  try {
+    const { semester, academic_year, status, student_id, unit_id } = c.req.query();
+    
+    let query = `
+      SELECT 
+        au.*,
+        u.unit_name,
+        u.unit_code,
+        s.name as student_name,
+        s.registration_number,
+        s.course,
+        s.level_of_study
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      JOIN students s ON au.student_id = s.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramCount = 0;
+    
+    if (semester) {
+      paramCount++;
+      query += ` AND au.semester = $${paramCount}`;
+      params.push(semester);
+    }
+    
+    if (academic_year) {
+      paramCount++;
+      query += ` AND au.academic_year = $${paramCount}`;
+      params.push(academic_year);
+    }
+    
+    if (status) {
+      paramCount++;
+      query += ` AND au.status = $${paramCount}`;
+      params.push(status);
+    }
+    
+    if (student_id) {
+      paramCount++;
+      query += ` AND au.student_id = $${paramCount}`;
+      params.push(student_id);
+    }
+    
+    if (unit_id) {
+      paramCount++;
+      query += ` AND au.unit_id = $${paramCount}`;
+      params.push(unit_id);
+    }
+    
+    query += ' ORDER BY au.allocated_at DESC';
+    
+    const { rows } = await pool.query(query, params);
+    
+    // Get summary statistics
+    const { rows: statsRows } = await pool.query(`
+      SELECT 
+        COUNT(*) as total_allocations,
+        COUNT(CASE WHEN status = 'allocated' THEN 1 END) as pending_registrations,
+        COUNT(CASE WHEN status = 'registered' THEN 1 END) as registered,
+        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled
+      FROM allocated_units
+    `);
+    
+    return c.json({
+      success: true,
+      data: rows,
+      count: rows.length,
+      statistics: statsRows[0]
+    });
+    
+  } catch (error) {
+    console.error('Error fetching allocations:', error);
+    return c.json({ 
+      error: 'Failed to fetch allocations', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// =============================================================================
+// END UNIT ALLOCATION SYSTEM
+// =============================================================================
 
 // Export the app object for use in Vercel API handler
 export { app };
