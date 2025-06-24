@@ -727,3 +727,127 @@ POST /students/:id/exam-card
   "message": "Exam card uploaded."
 }
 ```
+
+## New Unified Document Upload System
+
+The API now supports a unified document upload system that stores all student documents in a single table with document type categorization.
+
+### Document Upload Endpoints
+
+All document upload endpoints follow the same pattern and use `multipart/form-data`:
+
+#### Request Format
+```
+POST /{document-type}
+Content-Type: multipart/form-data
+
+Form Fields:
+- registrationNumber: String (required) - Student's registration number
+- file: File (required) - Document file (max 10MB)
+```
+
+#### Available Document Types
+
+##### Exam Card Upload
+```
+POST /exam-card
+```
+
+##### Fees Structure Upload
+```
+POST /fees-structure
+```
+
+##### Fees Statement Upload
+```
+POST /fees-statement
+```
+
+##### Results Upload
+```
+POST /results
+```
+
+##### Timetable Upload
+```
+POST /timetable
+```
+
+#### Response Format
+```json
+{
+  "message": "Document uploaded successfully",
+  "success": true,
+  "data": {
+    "id": "uuid_here",
+    "registrationNumber": "STU001",
+    "documentType": "exam-card",
+    "fileUrl": "https://example.com/file.pdf",
+    "fileName": "exam_card.pdf",
+    "fileSize": 1024,
+    "uploadedAt": "2023-01-01T00:00:00Z"
+  }
+}
+```
+
+### Get Student Documents
+
+```
+GET /documents/:registrationNumber
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "uuid_here",
+      "registration_number": "STU001",
+      "document_type": "exam-card",
+      "file_url": "https://example.com/exam_card.pdf",
+      "file_name": "exam_card.pdf",
+      "file_size": 1024,
+      "uploaded_at": "2023-01-01T00:00:00Z",
+      "created_at": "2023-01-01T00:00:00Z",
+      "updated_at": "2023-01-01T00:00:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+### File Validation
+
+- **Maximum file size:** 10MB
+- **Supported formats:** PDF, DOC, DOCX, Images (JPG, PNG, etc.)
+- **Required fields:** registrationNumber, file
+
+### Storage
+
+Documents are stored in Supabase storage under the `student-documents` bucket with the following structure:
+```
+student-documents/
+├── exam-card/
+├── fees-structure/
+├── fees-statement/
+├── results/
+└── timetable/
+```
+
+### Error Handling
+
+All endpoints return appropriate HTTP status codes and error messages:
+
+- `400 Bad Request` - Missing required fields or validation errors
+- `500 Internal Server Error` - Upload or database errors
+
+### Test Page
+
+You can test the new unified upload system at: `/test-unified-upload`
+
+---
+
+# Legacy API Documentation
+
+## Authentication

@@ -79,3 +79,18 @@ CREATE TABLE public.units (
   unit_code character varying NOT NULL UNIQUE,
   CONSTRAINT units_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.student_documents (
+  id uuid NOT NULL DEFAULT gen_random_uuid(),
+  registration_number character varying(50) NOT NULL,
+  document_type character varying(50) NOT NULL,
+  file_url text NOT NULL,
+  file_name character varying(255) NOT NULL,
+  file_size integer NOT NULL,
+  uploaded_at timestamp with time zone DEFAULT now(),
+  created_at timestamp with time zone DEFAULT now(),
+  updated_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT student_documents_pkey PRIMARY KEY (id)
+);
+CREATE INDEX idx_student_documents_registration ON public.student_documents(registration_number);
+CREATE INDEX idx_student_documents_type ON public.student_documents(document_type);
+CREATE INDEX idx_student_documents_uploaded ON public.student_documents(uploaded_at);

@@ -6,6 +6,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 import { serveStatic } from '@hono/node-server/serve-static';
+import { validator } from 'hono/validator';
 
 const app = new Hono();
 
@@ -707,1569 +708,244 @@ app.delete('/students/:id/academic-leave', async (c) => {
   }
 });
 
-// Deregister a student by ID
-app.post('/students/:id/deregister', async (c) => {
+// =============================================================================
+// NEW UNIFIED DOCUMENT UPLOAD SYSTEM
+// =============================================================================
+
+// Validation middleware for file upload
+const fileUploadValidator = validator('form', (value, c) => {
+  const registrationNumber = value['registrationNumber']
+  const file = value['file']
+
+  if (!registrationNumber || typeof registrationNumber !== 'string') {
+    return c.json({ error: 'Registration number is required' }, 400)
+  }
+
+  if (!file || !(file instanceof File)) {
+    return c.json({ error: 'File is required' }, 400)
+  }
+
+  // Validate file size (max 10MB)
+  if (file.size > 10 * 1024 * 1024) {
+    return c.json({ error: 'File size must be less than 10MB' }, 400)
+  }
+
+  return {
+    registrationNumber: registrationNumber.trim(),
+    file: file
+  }
+})
+
+// Generic function to handle file upload
+async function handleFileUpload(
+  registrationNumber,
+  file,
+  documentType
+) {
   try {
-    const student_id = c.req.param('id');
-    console.log('Deregistering student:', student_id);
-    
-    // Get reason from body if provided
-    let reason = '';
-    try {
-      const body = await c.req.json();
-      reason = body.reason || body.deregistration_reason || '';
-    } catch (e) {
-      // If no body or invalid JSON, use default empty reason
+    // Generate unique filename
+    const fileExtension = file.name.split('.').pop()
+    const fileName = `${documentType}/${registrationNumber}_${Date.now()}.${fileExtension}`
+
+    // Convert file to buffer
+    const fileBuffer = await file.arrayBuffer()
+    const uint8Array = new Uint8Array(fileBuffer)
+
+    // Upload to Supabase storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('student-documents')
+      .upload(fileName, uint8Array, {
+        contentType: file.type,
+        upsert: false
+      })
+
+    if (uploadError) {
+      throw new Error(`Upload failed: ${uploadError.message}`)
     }
-    
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    
+
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('student-documents')
+      .getPublicUrl(fileName)
+
+    const fileUrl = urlData.publicUrl
+
+    // Insert record into database
     const { rows } = await pool.query(
-      `UPDATE students SET 
-        deregistered=true, 
-        deregistration_date=$1, 
-        deregistration_reason=$2,
-        status='deregistered' 
-      WHERE id=$3 RETURNING *`,
-      [today, reason, student_id]
-    );
-    
-    if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-    return c.json({ 
-      message: 'Student deregistered successfully', 
-      student: rows[0] 
-    });
-  } catch (error) {
-    console.error('Error deregistering student:', error);
-    return c.json({ 
-      error: 'Failed to deregister student', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Deregister a student by registration number
-app.post('/students/registration/:regNumber/deregister', async (c) => {
-  try {
-    const registration_number = c.req.param('regNumber');
-    console.log('Deregistering student with registration number:', registration_number);
-    
-    // Get reason from body if provided
-    let reason = '';
-    try {
-      const body = await c.req.json();
-      reason = body.reason || body.deregistration_reason || '';
-    } catch (e) {
-      // If no body or invalid JSON, use default empty reason
-    }
-    
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    
-    const { rows } = await pool.query(
-      `UPDATE students SET 
-        deregistered=true, 
-        deregistration_date=$1, 
-        deregistration_reason=$2,
-        status='deregistered' 
-      WHERE registration_number=$3 RETURNING *`,
-      [today, reason, registration_number]
-    );
-    
-    if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-    return c.json({ 
-      message: 'Student deregistered successfully', 
-      student: rows[0] 
-    });
-  } catch (error) {
-    console.error('Error deregistering student:', error);
-    return c.json({ 
-      error: 'Failed to deregister student', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Bulk deregister students
-app.post('/students/deregister', async (c) => {
-  try {
-    const body = await c.req.json();
-    console.log('Bulk deregistration request received');
-    
-    if (!body.student_ids && !body.registration_numbers) {
-      return c.json({ 
-        error: 'Missing required field', 
-        details: 'Student IDs or registration numbers are required' 
-      }, 400);
-    }
-    
-    const reason = body.reason || body.deregistration_reason || '';
-    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    
-    let results = [];
-    
-    if (body.student_ids && body.student_ids.length > 0) {
-      const { rows } = await pool.query(
-        `UPDATE students SET 
-          deregistered=true, 
-          deregistration_date=$1, 
-          deregistration_reason=$2,
-          status='deregistered' 
-        WHERE id = ANY($3) RETURNING *`,
-        [today, reason, body.student_ids]
-      );
-      results = results.concat(rows);
-    }
-    
-    if (body.registration_numbers && body.registration_numbers.length > 0) {
-      const { rows } = await pool.query(
-        `UPDATE students SET 
-          deregistered=true, 
-          deregistration_date=$1, 
-          deregistration_reason=$2,
-          status='deregistered' 
-        WHERE registration_number = ANY($3) RETURNING *`,
-        [today, reason, body.registration_numbers]
-      );
-      results = results.concat(rows);
-    }
-    
-    return c.json({ 
-      message: `${results.length} students deregistered successfully`, 
-      students: results 
-    });
-  } catch (error) {
-    console.error('Error deregistering students:', error);
-    return c.json({ 
-      error: 'Failed to deregister students', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Restore a deregistered student
-app.post('/students/:id/restore', async (c) => {
-  try {
-    const student_id = c.req.param('id');
-    console.log('Restoring deregistered student:', student_id);
-    
-    const { rows } = await pool.query(
-      `UPDATE students SET 
-        deregistered=false, 
-        deregistration_date=NULL, 
-        deregistration_reason=NULL,
-        status='active' 
-      WHERE id=$1 RETURNING *`,
-      [student_id]
-    );
-    
-    if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-    return c.json({ 
-      message: 'Student restored successfully', 
-      student: rows[0] 
-    });
-  } catch (error) {
-    console.error('Error restoring student:', error);
-    return c.json({ 
-      error: 'Failed to restore student', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Get a single student by ID
-app.get('/students/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching student by ID:', error);
-    return c.json({ 
-      error: 'Failed to fetch student', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Create a new student
-app.post('/students', async (c) => {
-  try {
-    // Check if the request is multipart form data or binary data
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
-    console.log('Full headers:', Object.fromEntries(c.req.raw.headers.entries()));
-    
-    // Log environment info to help debugging
-    console.log('Node env:', process.env.NODE_ENV);
-    console.log('Vercel env:', process.env.VERCEL_ENV);
-    
-    // Handle binary photo upload with student data in headers/query
-    if (contentType.includes('application/octet-stream') || 
-        (contentType.includes('image/') && !contentType.includes('multipart'))) {
-      
-      console.log('Detected binary photo upload, processing student data from headers/query');
-      
-      try {
-        // Get student data from query parameters and headers
-        const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
-        const name = c.req.query('name') || c.req.header('x-name');
-        const course = c.req.query('course') || c.req.header('x-course');
-        const level_of_study = c.req.query('level_of_study') || c.req.header('x-level-of-study');
-        const national_id = c.req.query('national_id') || c.req.header('x-national-id');
-        const birth_certificate = c.req.query('birth_certificate') || c.req.header('x-birth-certificate');
-        const date_of_birth = c.req.query('date_of_birth') || c.req.header('x-date-of-birth');
-        const email = c.req.query('email') || c.req.header('x-email');
-        const password = c.req.query('password') || c.req.header('x-password');
-        const fileName = c.req.query('filename') || c.req.header('x-filename') || 'student_photo';
-        
-        // Validate required fields
-        if (!registration_number || !name || !course || !level_of_study) {
-          return c.json({ 
-            error: 'Missing required fields', 
-            details: 'Registration number, name, course, and level of study must be provided via query parameters or headers (x-* headers)' 
-          }, 400);
-        }
-        
-        // Get the binary photo data
-        const photoBinaryData = await c.req.arrayBuffer();
-        let student_photo_url = null;
-        
-        if (photoBinaryData && photoBinaryData.byteLength > 0) {
-          console.log('Binary photo data received, uploading...');
-          
-          try {
-            const uploadResult = await uploadFileToSupabase(
-              photoBinaryData, 
-              'Student_photos', 
-              registration_number
-            );
-            student_photo_url = uploadResult.publicUrl;
-            console.log('Binary photo uploaded successfully:', student_photo_url);
-          } catch (uploadError) {
-            console.error('Exception during binary photo upload:', uploadError);
-            // Continue without photo instead of failing the whole request
-            console.log('Continuing registration without photo due to exception:', uploadError.message);
-          }
-        }
-        
-        // Determine default password if not provided
-        let finalPassword = password;
-        if (!finalPassword) {
-          if (national_id) {
-            finalPassword = national_id;
-          } else if (birth_certificate) {
-            finalPassword = birth_certificate;
-          } else {
-            finalPassword = 'defaultpassword';
-          }
-        }
-        
-        // Hash the password before storing
-        const hashedPassword = await bcrypt.hash(finalPassword, 10);
-        
-        // Format date properly for database
-        let formattedDate = null;
-        if (date_of_birth) {
-          try {
-            const dateObj = new Date(date_of_birth);
-            if (!isNaN(dateObj.getTime())) {
-              formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
-            }
-          } catch (err) {
-            console.error('Error formatting date:', err);
-          }
-        }
-        
-        console.log('Inserting student with binary photo upload:', {
-          registration_number,
-          name,
-          course,
-          level_of_study,
-          photo_url: student_photo_url || null,
-          national_id: national_id || null,
-          birth_certificate: birth_certificate || null,
-          date_of_birth: formattedDate,
-          email: email || null,
-          password: 'HASHED'
-        });
-        
-        const { rows } = await pool.query(
-          `INSERT INTO students (
-            registration_number, name, course, level_of_study, photo_url,
-            national_id, birth_certificate, date_of_birth, password, email, status
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-          [
-            registration_number, name, course, level_of_study, student_photo_url || null,
-            national_id || null, birth_certificate || null, formattedDate, hashedPassword, email || null, 'active'
-          ]
-        );
-        
-        return c.json({
-          ...rows[0],
-          message: 'Student created successfully with binary photo upload'
-        });
-        
-      } catch (binaryError) {
-        console.error('Error processing binary photo upload:', binaryError);
-        return c.json({
-          error: 'Failed to process binary photo upload',
-          details: binaryError.message,
-          stack: process.env.NODE_ENV === 'development' ? binaryError.stack : undefined
-        }, 500);
-      }
-    }
-    // Handle multipart/form-data
-    else if (contentType.includes('multipart/form-data')) {
-      console.log('Detected multipart/form-data request, redirecting to multipart handler');
-      // Redirect to the multipart handler (which makes photo optional)
-      try {
-        return await handleStudentWithPhoto(c);
-      } catch (photoError) {
-        console.error('Error in multipart form handler:', photoError);
-        return c.json({
-          error: 'Error processing student registration',
-          details: photoError.message,
-          stack: process.env.NODE_ENV === 'development' ? photoError.stack : undefined
-        }, 500);
-      }
-    }
-    
-    console.log('Processing standard JSON request');
-    // Handle JSON request
-    let data;
-    try {
-      data = await c.req.json();
-    } catch (jsonError) {
-      console.error('Error parsing JSON:', jsonError);
-      return c.json({
-        error: 'Invalid JSON data',
-        details: jsonError.message,
-        message: 'Make sure you are sending a valid JSON body with the correct content-type header'
-      }, 400);
-    }
-    console.log('Received student data:', data);
-    
-    const { 
-      registration_number, 
-      name, 
-      course, 
-      level_of_study, 
-      photo_url,
-      national_id,
-      birth_certificate,
-      date_of_birth,
-      password,
-      email
-    } = data;
-    
-    // Validate required fields
-    if (!registration_number || !name || !course || !level_of_study) {
-      return c.json({ 
-        error: 'Missing required fields', 
-        details: 'Registration number, name, course, and level of study are required' 
-      }, 400);
-    }
-    
-    // Determine default password if not provided
-    let finalPassword = password;
-    if (!finalPassword) {
-      // Use national_id or birth_certificate as password
-      if (national_id) {
-        finalPassword = national_id;
-      } else if (birth_certificate) {
-        finalPassword = birth_certificate;
-      } else {
-        finalPassword = 'defaultpassword';
-      }
-    }
-    
-    // Hash the password before storing
-    const hashedPassword = await bcrypt.hash(finalPassword, 10);
-    
-    // Format date properly for database
-    let formattedDate = null;
-    if (date_of_birth) {
-      try {
-        const dateObj = new Date(date_of_birth);
-        if (!isNaN(dateObj.getTime())) {
-          formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
-        }
-      } catch (err) {
-        console.error('Error formatting date:', err);
-      }
-    }
-    
-    console.log('Inserting student with data:', {
-      registration_number,
-      name,
-      course,
-      level_of_study,
-      photo_url: photo_url || null,
-      national_id: national_id || null,
-      birth_certificate: birth_certificate || null,
-      date_of_birth: formattedDate,
-      email: email || null,
-      password: 'HASHED'
-    });
-    
-    const { rows } = await pool.query(
-      `INSERT INTO students (
-        registration_number, name, course, level_of_study, photo_url,
-        national_id, birth_certificate, date_of_birth, password, email, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      `INSERT INTO student_documents (
+        registration_number, document_type, file_url, 
+        file_name, file_size, uploaded_at
+      ) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
       [
-        registration_number, name, course, level_of_study, photo_url || null,
-        national_id || null, birth_certificate || null, formattedDate, hashedPassword, email || null, 'active'
+        registrationNumber, 
+        documentType, 
+        fileUrl,
+        file.name, 
+        file.size, 
+        new Date().toISOString()
       ]
-    );
-    
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating student:', error);
-    return c.json({ 
-      error: 'Failed to create student', 
-      details: error.message,
-      stack: error.stack
-    }, 500);
-  }
-});
+    )
 
-// Handle student registration with photo upload
-async function handleStudentWithPhoto(c) {
-  console.log('Handling student registration with photo');
-  
-  // Declare all variables at the beginning of the function to avoid scope issues
-  let registration_number = '';
-  let name = '';
-  let course = '';
-  let level_of_study = '';
-  let national_id = null;
-  let birth_certificate = null;
-  let date_of_birth = null;
-  let password = null;
-  let email = null;
-  let student_photo_url = null;
-  let formData = {};
-  
-  try {
-    // Log request information to help diagnose Vercel issues
-    console.log('Request method:', c.req.method);
-    console.log('Content-Type:', c.req.header('content-type'));
-    console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()));
-    
-    try {
-      // Parse the multipart form data based on Hono documentation
-      console.log('Attempting to parse form data...');
-      console.log('Content-Type header details:', c.req.header('content-type'));
+    if (rows.length === 0) {
+      // If database insert fails, delete the uploaded file
+      await supabase.storage
+        .from('student-documents')
+        .remove([fileName])
       
-      // Use simple parseBody with proper error handling
-      try {
-        // According to Hono docs, this is all we need for file uploads
-        formData = await c.req.parseBody();
-        console.log('Form data successfully parsed, keys:', Object.keys(formData));
-        
-        // Debug logging for file keys
-        Object.keys(formData).forEach(key => {
-          const value = formData[key];
-          if (value instanceof File || (value && value.name && value.type)) {
-            console.log(`File field detected: ${key}`, { 
-              name: value.name, 
-              type: value.type, 
-              size: value.size || (value.data ? value.data.length : 'unknown') 
-            });
-          } else {
-            console.log(`Form field: ${key} = ${typeof value === 'object' ? JSON.stringify(value) : value}`);
-          }
-        });
-      } catch (parseError) {
-        console.error('Detailed parse error:', parseError);
-        
-        // Try standard formData() method as a fallback
-        try {
-          console.log('Trying alternative formData() method...');
-          const rawFormData = await c.req.formData();
-          formData = Object.fromEntries(rawFormData);
-          console.log('Used formData() method instead, keys:', Object.keys(formData));
-        } catch (altError) {
-          console.error('Alternative form parsing also failed:', altError);
-          throw new Error(`Form parsing failed: ${parseError.message}. Alternative method also failed: ${altError.message}`);
-        }
-      }
-      
-      // Extract student data with additional validation
-      registration_number = formData.registration_number || '';
-      name = formData.name || '';
-      course = formData.course || '';
-      level_of_study = formData.level_of_study || '';
-      national_id = formData.national_id || null;
-      birth_certificate = formData.birth_certificate || null;
-      date_of_birth = formData.date_of_birth || null;
-      password = formData.password || null;
-      email = formData.email || null;
-      
-      console.log('Extracted form data:', {
-        registration_number,
-        name,
-        course,
-        level_of_study,
-        national_id: national_id ? '[PRESENT]' : '[NOT PRESENT]',
-        birth_certificate: birth_certificate ? '[PRESENT]' : '[NOT PRESENT]',
-        date_of_birth,
-        email: email || '[NOT PRESENT]',
-        password: password ? '[PRESENT]' : '[NOT PRESENT]',
-        photo: formData.photo ? '[PHOTO PRESENT]' : '[NO PHOTO]'
-      });
-      
-      // Validate required fields
-      if (!registration_number || !name || !course || !level_of_study) {
-        return c.json({ 
-          error: 'Missing required fields', 
-          details: 'Registration number, name, course, and level of study are required' 
-        }, 400);
-      }
-    } catch (parseError) {
-      console.error('Error parsing form data:', parseError);
-      console.error('Parse error stack:', parseError.stack);
-      return c.json({
-        error: 'Failed to process form data',
-        details: 'The server could not process the uploaded form data. Make sure you are using multipart/form-data correctly.',
-        originalError: parseError.message,
-        stack: process.env.NODE_ENV === 'development' ? parseError.stack : undefined
-      }, 400);
+      throw new Error('Database insertion failed')
     }
-    
-    // Handle photo upload if provided (optional)
-    const photo = formData.photo;
-    
-    if (photo) {
-      console.log('Photo received, uploading to storage');
-      
-      // Handle both Hono File object or our custom object structure
-      let fileToUpload;
-      
-      if (photo instanceof File) {
-        // Hono provides standard File objects
-        console.log('Photo details (standard File):', {
-          name: photo.name,
-          type: photo.type,
-          size: photo.size
-        });
-        fileToUpload = {
-          name: photo.name,
-          type: photo.type,
-          // Convert File to array buffer then to buffer for Supabase
-          data: await photo.arrayBuffer()
-        };
-      } else if (photo.data) {
-        // Support legacy format as well
-        console.log('Photo details (legacy format):', {
-          name: photo.name,
-          type: photo.type,
-          size: photo.data.length
-        });
-        fileToUpload = photo;
-      } else {
-        console.log('Unknown photo format:', photo);
-        throw new Error('Invalid photo format received');
+
+    return {
+      success: true,
+      data: {
+        id: rows[0].id,
+        registrationNumber,
+        documentType,
+        fileUrl,
+        fileName: file.name,
+        fileSize: file.size,
+        uploadedAt: rows[0].uploaded_at
       }
-      
-      try {
-        const uploadResult = await uploadFileToSupabase(
-          fileToUpload, 
-          'Student_photos', 
-          registration_number
-        );
-        student_photo_url = uploadResult.publicUrl;
-        console.log('Photo uploaded successfully:', student_photo_url);
-      } catch (uploadError) {
-        console.error('Exception during photo upload:', uploadError);
-        // Continue without photo instead of failing the whole request
-        console.log('Continuing registration without photo due to exception:', uploadError.message);
-      }
-    } else {
-      console.log('No photo provided in the request - continuing with registration');
-    }
-    
-    // Determine default password if not provided
-    let finalPassword = password;
-    if (!finalPassword) {
-      // Use national_id or birth_certificate as password
-      if (national_id) {
-        finalPassword = national_id;
-      } else if (birth_certificate) {
-        finalPassword = birth_certificate;
-      } else {
-        finalPassword = 'defaultpassword';
-      }
-    }
-    
-    try {
-      // Hash the password before storing
-      const hashedPassword = await bcrypt.hash(finalPassword, 10);
-      
-      // Format date properly for database
-      let formattedDate = null;
-      if (date_of_birth) {
-        try {
-          const dateObj = new Date(date_of_birth);
-          if (!isNaN(dateObj.getTime())) {
-            formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
-          }
-        } catch (dateErr) {
-          console.error('Error formatting date:', dateErr);
-        }
-      }
-      
-      console.log('Inserting student with data:', {
-        registration_number,
-        name,
-        course,
-        level_of_study,
-        photo_url: student_photo_url || '[NO PHOTO URL]',
-        national_id: national_id || '[NO NATIONAL ID]',
-        birth_certificate: birth_certificate || '[NO BIRTH CERTIFICATE]',
-        date_of_birth: formattedDate || '[NO DOB]',
-        email: email || '[NO EMAIL]',
-        password: 'HASHED'
-      });
-      
-      // Check database connection before insert
-      try {
-        await pool.query('SELECT 1');
-        console.log('Database connection successful');
-      } catch (dbError) {
-        console.error('Database connection failed:', dbError);
-        return c.json({
-          error: 'Database connection failed',
-          details: 'The server could not connect to the database',
-          originalError: dbError.message
-        }, 503);
-      }
-      
-      const { rows } = await pool.query(
-        `INSERT INTO students (
-          registration_number, name, course, level_of_study, photo_url,
-          national_id, birth_certificate, date_of_birth, password, email, status
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-        [
-          registration_number, name, course, level_of_study, student_photo_url || null,
-          national_id, birth_certificate, formattedDate, hashedPassword, email || null, 'active'
-        ]
-      );
-      
-      return c.json({
-        message: 'Student created successfully',
-        student: rows[0]
-      });
-    } catch (dbOperationError) {
-      console.error('Error in database operation:', dbOperationError);
-      return c.json({
-        error: 'Database operation failed',
-        details: dbOperationError.message,
-        stack: process.env.NODE_ENV === 'development' ? dbOperationError.stack : undefined
-      }, 500);
     }
   } catch (error) {
-    console.error('Error creating student with photo:', error);
-    console.error('Error stack:', error.stack);
-    
-    // Provide more specific error details based on error type
-    let errorMessage = 'Failed to create student';
-    let errorDetails = error.message || 'Unknown error occurred';
-    let statusCode = 500;
-    
-    if (error instanceof SyntaxError && error.message.includes('JSON')) {
-      errorMessage = 'Invalid form data';
-      errorDetails = 'Could not parse the form data. Please check your form submission.';
-      statusCode = 400;
-    } else if (error.message && error.message.includes('parseBody')) {
-      errorMessage = 'Form parsing error';
-      errorDetails = 'There was a problem processing your form data. Make sure your form is properly formatted.';
-      statusCode = 400;
-    } else if (error.message && error.message.includes('pool')) {
-      errorMessage = 'Database connection error';
-      errorDetails = 'Could not connect to the database. Please try again later.';
-      statusCode = 503;
-    }
-    
-    return c.json({ 
-      error: errorMessage, 
-      details: errorDetails,
-      errorType: error.constructor ? error.constructor.name : 'Unknown',
-      timestamp: new Date().toISOString(),
-      path: '/students (multipart handler)'
-    }, statusCode);
+    throw error
   }
 }
 
-// Update a student
-app.put('/students/:id', async (c) => {
+// Exam Card upload route
+app.post('/exam-card', fileUploadValidator, async (c) => {
   try {
-    const id = c.req.param('id');
+    const { registrationNumber, file } = c.req.valid('form')
     
-    // Check if the request is multipart form data
-    const contentType = c.req.header('content-type') || '';
-    console.log('Update request content-type:', contentType);
-    
-    let data;
-    let update_photo_url = null;
-    
-    // Handle multipart/form-data (with photo)
-    if (contentType.includes('multipart/form-data')) {
-      try {
-        console.log('Processing multipart form data for student update');
-        const formData = await c.req.formData();
-        
-        // Extract form fields
-        data = {
-          registration_number: formData.get('registration_number'),
-          name: formData.get('name'),
-          course: formData.get('course'),
-          level_of_study: formData.get('level_of_study'),
-          national_id: formData.get('national_id'),
-          birth_certificate: formData.get('birth_certificate'),
-          date_of_birth: formData.get('date_of_birth'),
-          password: formData.get('password'),
-          email: formData.get('email')
-        };
-        
-        // Handle photo if present (optional)
-        const photo = formData.get('photo');
-        if (photo && typeof photo !== 'string' && photo.size > 0) {
-          console.log('Photo included in update, uploading...');
-          
-          try {
-            // Convert File to our expected format
-            const fileData = await photo.arrayBuffer();
-            const fileObj = {
-              name: photo.name,
-              type: photo.type,
-              data: new Uint8Array(fileData)
-            };
-            
-            // Upload using our helper function
-            const uploadResult = await uploadFileToSupabase(
-              fileObj, 
-              'Student_photos', 
-              data.registration_number || id
-            );
-            
-            update_photo_url = uploadResult.publicUrl;
-            console.log('Photo updated successfully:', update_photo_url);
-          } catch (uploadError) {
-            console.error('Exception during photo upload in update:', uploadError);
-            console.log('Continuing update without changing photo due to exception');
-          }
-        } else {
-          console.log('No photo included in the update request');
-        }
-      } catch (formError) {
-        console.error('Error processing form data for update:', formError);
-        return c.json({
-          error: 'Failed to process form data',
-          details: formError.message
-        }, 400);
-      }
-    } else {
-      // Handle standard JSON request
-      try {
-        data = await c.req.json();
-      } catch (jsonError) {
-        console.error('Error parsing JSON for update:', jsonError);
-        return c.json({
-          error: 'Invalid JSON data',
-          details: jsonError.message
-        }, 400);
-      }
-    }
-    
-    console.log('Updating student data:', { id, ...data });
-    
-    const { 
-      registration_number, 
-      name, 
-      course, 
-      level_of_study, 
-      photo_url,  // Use the original name for consistency
-      national_id,
-      birth_certificate,
-      date_of_birth,
-      password,
-      email
-    } = data;
-    
-    // Use the photo URL from the form upload if available, otherwise use what came in the data
-    const final_photo_url = update_photo_url || photo_url;
-    
-    // Get current student data to determine if we need to update password
-    const currentStudent = await pool.query('SELECT * FROM students WHERE id = $1', [id]);
-    if (currentStudent.rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-    
-    // Determine if password should be updated based on ID/birth certificate changes
-    let finalPassword = password;
-    let shouldHashPassword = false;
-    
-    if (!finalPassword) {
-      // Keep existing password if not changing
-      finalPassword = currentStudent.rows[0].password;
-      
-      // If national_id or birth_certificate changed, update password accordingly
-      if (national_id && (national_id !== currentStudent.rows[0].national_id)) {
-        finalPassword = national_id;
-        shouldHashPassword = true;
-      } else if (birth_certificate && 
-                (birth_certificate !== currentStudent.rows[0].birth_certificate)) {
-        finalPassword = birth_certificate;
-        shouldHashPassword = true;
-      }
-    } else {
-      // If password was explicitly provided, hash it
-      shouldHashPassword = true;
-    }
-    
-    // Hash the password if it's new or changed
-    if (shouldHashPassword) {
-      finalPassword = await bcrypt.hash(finalPassword || 'defaultpassword', 10);
-    }
-    
-    // Format date properly for database
-    let formattedDate = null;
-    if (date_of_birth) {
-      try {
-        const dateObj = new Date(date_of_birth);
-        if (!isNaN(dateObj.getTime())) {
-          formattedDate = dateObj.toISOString().split('T')[0]; // YYYY-MM-DD format
-        }
-      } catch (err) {
-        console.error('Error formatting date:', err);
-      }
-    }
-    
-    console.log('Updating student with data:', {
-      registration_number,
-      name,
-      course,
-      level_of_study,
-      photo_url: final_photo_url || null,
-      national_id: national_id || null,
-      birth_certificate: birth_certificate || null,
-      date_of_birth: formattedDate,
-      email: email || null,
-      password: shouldHashPassword ? 'HASHED' : 'UNCHANGED'
-    });
-    
-    const { rows } = await pool.query(
-      `UPDATE students SET 
-        registration_number=$1, name=$2, course=$3, level_of_study=$4, photo_url=$5,
-        national_id=$6, birth_certificate=$7, date_of_birth=$8, password=$9, email=$10
-      WHERE id=$11 RETURNING *`,
-      [
-        registration_number, name, course, level_of_study, final_photo_url || null,
-        national_id || null, birth_certificate || null, formattedDate, finalPassword, email || null, id
-      ]
-    );
-    
-    if (rows.length === 0) return c.json({ error: 'Student not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating student:', error);
-    return c.json({ 
-      error: 'Failed to update student', 
-      details: error.message,
-      stack: error.stack
-    }, 500);
-  }
-});
-
-// Delete a student
-app.delete('/students/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM students WHERE id = $1', [id]);
-    return c.json({ message: 'Student deleted' });
-  } catch (error) {
-    console.error('Error deleting student:', error);
-    return c.json({ 
-      error: 'Failed to delete student', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// REGISTERED_UNITS CRUD
-app.get('/registered_units', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM registered_units');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching registered units:', error);
-    return c.json({ error: 'Failed to fetch registered units', details: error.message }, 500);
-  }
-});
-
-app.get('/registered_units/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM registered_units WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching registered unit:', error);
-    return c.json({ error: 'Failed to fetch registered unit', details: error.message }, 500);
-  }
-});
-
-app.post('/registered_units', async (c) => {
-  try {
-    const data = await c.req.json();
-    const { student_id, unit_name, unit_code, status } = data;
-    const { rows } = await pool.query(
-      'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
-      [student_id, unit_name, unit_code, status]
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating registered unit:', error);
-    return c.json({ error: 'Failed to create registered unit', details: error.message }, 500);
-  }
-});
-
-app.put('/registered_units/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const data = await c.req.json();
-    const { student_id, unit_name, unit_code, status } = data;
-    const { rows } = await pool.query(
-      'UPDATE registered_units SET student_id=$1, unit_name=$2, unit_code=$3, status=$4 WHERE id=$5 RETURNING *',
-      [student_id, unit_name, unit_code, status, id]
-    );
-    if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating registered unit:', error);
-    return c.json({ error: 'Failed to update registered unit', details: error.message }, 500);
-  }
-});
-
-app.delete('/registered_units/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM registered_units WHERE id = $1', [id]);
-    return c.json({ message: 'Unit deleted' });
-  } catch (error) {
-    console.error('Error deleting registered unit:', error);
-    return c.json({ error: 'Failed to delete registered unit', details: error.message }, 500);
-  }
-});
-
-// FEES CRUD
-app.get('/fees', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM fees');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching fees:', error);
-    return c.json({ error: 'Failed to fetch fees', details: error.message }, 500);
-  }
-});
-
-app.get('/students/:id/fees', async (c) => {
-  try {
-    const studentId = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM fees WHERE student_id = $1', [studentId]);
-    if (rows.length === 0) return c.json({ error: 'No fee records found for this student' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching student fees:', error);
-    return c.json({ error: 'Failed to fetch student fees', details: error.message }, 500);
-  }
-});
-
-// Get fee record by ID
-app.get('/fees/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM fees WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Fee not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching fee record:', error);
-    return c.json({ error: 'Failed to fetch fee record', details: error.message }, 500);
-  }
-});
-
-// Update fee record
-app.put('/fees/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const data = await c.req.json();
-    const { student_id, fee_balance, total_paid, semester_fee } = data;
-    const { rows } = await pool.query(
-      'UPDATE fees SET student_id=$1, fee_balance=$2, total_paid=$3, semester_fee=$4 WHERE id=$5 RETURNING *',
-      [student_id, fee_balance, total_paid, semester_fee, id]
-    );
-    if (rows.length === 0) return c.json({ error: 'Fee not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating fee record:', error);
-    return c.json({ error: 'Failed to update fee record', details: error.message }, 500);
-  }
-});
-
-app.delete('/fees/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM fees WHERE id = $1', [id]);
-    return c.json({ message: 'Fee deleted' });
-  } catch (error) {
-    console.error('Error deleting fee record:', error);
-    return c.json({ error: 'Failed to delete fee record', details: error.message }, 500);
-  }
-});
-
-// TIMETABLES CRUD
-app.get('/timetables', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM timetables');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching timetables:', error);
-    return c.json({ error: 'Failed to fetch timetables', details: error.message }, 500);
-  }
-});
-
-app.get('/students/:id/timetables', async (c) => {
-  try {
-    const studentId = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM timetables WHERE student_id = $1', [studentId]);
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching student timetables:', error);
-    return c.json({ error: 'Failed to fetch student timetables', details: error.message }, 500);
-  }
-});
-
-app.get('/timetables/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM timetables WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Timetable not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching timetable:', error);
-    return c.json({ error: 'Failed to fetch timetable', details: error.message }, 500);
-  }
-});
-
-app.post('/timetables', async (c) => {
-  try {
-    const data = await c.req.json();
-    const { student_id, semester, timetable_data } = data;
-    const { rows } = await pool.query(
-      'INSERT INTO timetables (student_id, semester, timetable_data) VALUES ($1, $2, $3) RETURNING *',
-      [student_id, semester, timetable_data]
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating timetable:', error);
-    return c.json({ error: 'Failed to create timetable', details: error.message }, 500);
-  }
-});
-
-app.put('/timetables/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const data = await c.req.json();
-    const { student_id, semester, timetable_data } = data;
-    const { rows } = await pool.query(
-      'UPDATE timetables SET student_id=$1, semester=$2, timetable_data=$3 WHERE id=$4 RETURNING *',
-      [student_id, semester, timetable_data, id]
-    );
-    if (rows.length === 0) return c.json({ error: 'Timetable not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating timetable:', error);
-    return c.json({ error: 'Failed to update timetable', details: error.message }, 500);
-  }
-});
-
-app.delete('/timetables/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM timetables WHERE id = $1', [id]);
-    return c.json({ message: 'Timetable deleted' });
-  } catch (error) {
-    console.error('Error deleting timetable:', error);
-    return c.json({ error: 'Failed to delete timetable', details: error.message }, 500);
-  }
-});
-
-// FINANCE CRUD
-app.get('/finance', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM finance');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching finance records:', error);
-    return c.json({ error: 'Failed to fetch finance records', details: error.message }, 500);
-  }
-});
-
-app.get('/students/:id/finance', async (c) => {
-  try {
-    const studentId = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM finance WHERE student_id = $1', [studentId]);
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching student finance records:', error);
-    return c.json({ error: 'Failed to fetch student finance records', details: error.message }, 500);
-  }
-});
-
-app.get('/finance/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM finance WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Finance record not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching finance record:', error);
-    return c.json({ error: 'Failed to fetch finance record', details: error.message }, 500);
-  }
-});
-
-app.post('/finance', async (c) => {
-  try {
-    const data = await c.req.json();
-    const { student_id, statement, statement_url, receipt_url } = data;
-    const { rows } = await pool.query(
-      'INSERT INTO finance (student_id, statement, statement_url, receipt_url) VALUES ($1, $2, $3, $4) RETURNING *',
-      [student_id, statement, statement_url, receipt_url]
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating finance record:', error);
-    return c.json({ error: 'Failed to create finance record', details: error.message }, 500);
-  }
-});
-
-app.put('/finance/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const data = await c.req.json();
-    const { student_id, statement, statement_url, receipt_url } = data;
-    const { rows } = await pool.query(
-      'UPDATE finance SET student_id=$1, statement=$2, statement_url=$3, receipt_url=$4 WHERE id=$5 RETURNING *',
-      [student_id, statement, statement_url, receipt_url, id]
-    );
-    if (rows.length === 0) return c.json({ error: 'Finance record not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating finance record:', error);
-    return c.json({ error: 'Failed to update finance record', details: error.message }, 500);
-  }
-});
-
-app.delete('/finance/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM finance WHERE id = $1', [id]);
-    return c.json({ message: 'Finance record deleted' });
-  } catch (error) {
-    console.error('Error deleting finance record:', error);
-    return c.json({ error: 'Failed to delete finance record', details: error.message }, 500);
-  }
-});
-
-// RESULTS CRUD
-app.get('/results', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM results');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching results:', error);
-    return c.json({ error: 'Failed to fetch results', details: error.message }, 500);
-  }
-});
-
-app.get('/students/:id/results', async (c) => {
-  try {
-    const studentId = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM results WHERE student_id = $1 ORDER BY semester', [studentId]);
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching student results:', error);
-    return c.json({ error: 'Failed to fetch student results', details: error.message }, 500);
-  }
-});
-
-app.get('/results/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM results WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Result not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching result:', error);
-    return c.json({ error: 'Failed to fetch result', details: error.message }, 500);
-  }
-});
-
-app.post('/results', async (c) => {
-  try {
-    const data = await c.req.json();
-    const { student_id, semester, result_data } = data;
-    const { rows } = await pool.query(
-      'INSERT INTO results (student_id, semester, result_data) VALUES ($1, $2, $3) RETURNING *',
-      [student_id, semester, result_data]
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating result:', error);
-    return c.json({ error: 'Failed to create result', details: error.message }, 500);
-  }
-});
-
-app.put('/results/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const data = await c.req.json();
-    const { student_id, semester, result_data } = data;
-    const { rows } = await pool.query(
-      'UPDATE results SET student_id=$1, semester=$2, result_data=$3 WHERE id=$4 RETURNING *',
-      [student_id, semester, result_data, id]
-    );
-    if (rows.length === 0) return c.json({ error: 'Result not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating result:', error);
-    return c.json({ error: 'Failed to update result', details: error.message }, 500);
-  }
-});
-
-app.delete('/results/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM results WHERE id = $1', [id]);
-    return c.json({ message: 'Result deleted' });
-  } catch (error) {
-    console.error('Error deleting result:', error);
-    return c.json({ error: 'Failed to delete result', details: error.message }, 500);
-  }
-});
-
-// UNITS CRUD
-app.get('/units', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM units');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching units:', error);
-    return c.json({ error: 'Failed to fetch units', details: error.message }, 500);
-  }
-});
-
-app.get('/units/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { rows } = await pool.query('SELECT * FROM units WHERE id = $1', [id]);
-    if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error fetching unit:', error);
-    return c.json({ error: 'Failed to fetch unit', details: error.message }, 500);
-  }
-});
-
-app.post('/units', async (c) => {
-  try {
-    const { unit_name, unit_code } = await c.req.json();
-    const { rows } = await pool.query(
-      'INSERT INTO units (unit_name, unit_code) VALUES ($1, $2) RETURNING *',
-      [unit_name, unit_code]
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error creating unit:', error);
-    return c.json({ error: 'Failed to create unit', details: error.message }, 500);
-  }
-});
-
-app.put('/units/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    const { unit_name, unit_code } = await c.req.json();
-    const { rows } = await pool.query(
-      'UPDATE units SET unit_name=$1, unit_code=$2 WHERE id=$3 RETURNING *',
-      [unit_name, unit_code, id]
-    );
-    if (rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error updating unit:', error);
-    return c.json({ error: 'Failed to update unit', details: error.message }, 500);
-  }
-});
-
-app.delete('/units/:id', async (c) => {
-  try {
-    const id = c.req.param('id');
-    await pool.query('DELETE FROM units WHERE id = $1', [id]);
-    return c.json({ message: 'Unit deleted' });
-  } catch (error) {
-    console.error('Error deleting unit:', error);
-    return c.json({ error: 'Failed to delete unit', details: error.message }, 500);
-  }
-});
-
-// Get units registered by a student
-app.get('/students/:id/registered-units', async (c) => {
-  try {
-    const student_id = c.req.param('id');
-    const { rows } = await pool.query(
-      'SELECT * FROM registered_units WHERE student_id = $1',
-      [student_id]
-    );
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching registered units for student:', error);
-    return c.json({ error: 'Failed to fetch registered units', details: error.message }, 500);
-  }
-});
-
-// Get units registered by a student using registration number
-app.get('/students/registration/:regNumber/registered-units', async (c) => {
-  try {
-    const registration_number = c.req.param('regNumber');
-    console.log('Fetching units for student with registration number:', registration_number);
-    
-    // First get the student ID from registration number
-    const studentResult = await pool.query(
-      'SELECT id FROM students WHERE registration_number = $1',
-      [registration_number]
-    );
-    
-    if (studentResult.rows.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    const student_id = studentResult.rows[0].id;
-    
-    // Then get the registered units using the student ID
-    const { rows } = await pool.query(
-      'SELECT * FROM registered_units WHERE student_id = $1',
-      [student_id]
-    );
-    
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching registered units for student by registration number:', error);
-    return c.json({ error: 'Failed to fetch registered units', details: error.message }, 500);
-  }
-});
-
-// Alias endpoint for compatibility with existing code
-app.get('/students/registration/:regNumber/units', async (c) => {
-  try {
-    const registration_number = c.req.param('regNumber');
-    console.log('Fetching units for student with registration number (alias):', registration_number);
-    
-    // First get the student ID from registration number
-    const studentResult = await pool.query(
-      'SELECT id FROM students WHERE registration_number = $1',
-      [registration_number]
-    );
-    
-    if (studentResult.rows.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    const student_id = studentResult.rows[0].id;
-    
-    // Then get the registered units using the student ID
-    const { rows } = await pool.query(
-      'SELECT * FROM registered_units WHERE student_id = $1',
-      [student_id]
-    );
-    
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching registered units for student by registration number:', error);
-    return c.json({ error: 'Failed to fetch registered units', details: error.message }, 500);
-  }
-});
-
-// Register a unit for a student (student registers a unit)
-app.post('/students/:id/register-unit', async (c) => {
-  try {
-    const student_id = c.req.param('id');
-    const { unit_id } = await c.req.json();
-    // Get unit details
-    const unitRes = await pool.query('SELECT * FROM units WHERE id = $1', [unit_id]);
-    if (unitRes.rows.length === 0) return c.json({ error: 'Unit not found' }, 404);
-    const unit = unitRes.rows[0];
-    // Register the unit for the student
-    const { rows } = await pool.query(
-      'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
-      [student_id, unit.unit_name, unit.unit_code, 'registered']
-    );
-    return c.json(rows[0]);
-  } catch (error) {
-    console.error('Error registering unit for student:', error);
-    return c.json({ error: 'Failed to register unit', details: error.message }, 500);
-  }
-});
-
-// Register units for a student in bulk
-app.post('/students/:id/register-units', async (c) => {
-  try {
-    const studentId = c.req.param('id');
-    console.log('Registering units for student:', studentId);
-    
-    let body;
-    try {
-      body = await c.req.json();
-      console.log('Registration request received:', body);
-    } catch (jsonError) {
-      console.error('Error parsing JSON in unit registration request:', jsonError);
-      return c.json({
-        error: 'Invalid JSON data',
-        details: 'The request body must be valid JSON'
-      }, 400);
-    }
-    
-    // Check if student exists
-    const studentCheck = await pool.query('SELECT id FROM students WHERE id = $1', [studentId]);
-    if (studentCheck.rows.length === 0) {
-      return c.json({ 
-        error: 'Student not found',
-        details: `No student found with ID: ${studentId}`
-      }, 404);
-    }
-    
-    // Expect an array of unit codes or an array of objects with unit_code
-    const unit_codes = Array.isArray(body) ? body : (body.units || []);
-    
-    if (!unit_codes || unit_codes.length === 0) {
-      return c.json({ 
-        error: 'Missing required field', 
-        details: 'At least one unit must be provided for registration'
-      }, 400);
-    }
-    
-    const registered_units = [];
-    const errors = [];
-    
-    // Process each unit registration
-    for (const unit of unit_codes) {
-      try {
-        const unit_code = typeof unit === 'string' ? unit : unit.unit_code;
-        
-        if (!unit_code) {
-          errors.push({
-            unit: unit,
-            error: 'Missing unit_code field'
-          });
-          continue;
-        }
-        
-        // Check if the unit exists
-        const unitCheck = await pool.query('SELECT * FROM units WHERE unit_code = $1', [unit_code]);
-        
-        if (unitCheck.rows.length === 0) {
-          errors.push({
-            unit_code: unit_code,
-            error: 'Unit does not exist'
-          });
-          continue;
-        }
-        
-        const unit_name = unitCheck.rows[0].unit_name;
-        
-        // Check if the unit is already registered by this student
-        const alreadyRegistered = await pool.query(
-          'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
-          [studentId, unit_code]
-        );
-        
-        if (alreadyRegistered.rows.length > 0) {
-          errors.push({
-            unit_code: unit_code,
-            error: 'Unit already registered by this student'
-          });
-          continue;
-        }
-        
-        // Register the unit
-        const { rows } = await pool.query(
-          'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
-          [studentId, unit_name, unit_code, 'registered']
-        );
-        
-        registered_units.push(rows[0]);
-      } catch (unitError) {
-        console.error(`Error registering unit:`, unitError);
-        errors.push({
-          unit: unit,
-          error: unitError.message
-        });
-      }
-    }
+    const result = await handleFileUpload(registrationNumber, file, 'exam-card')
     
     return c.json({
-      message: `${registered_units.length} units registered successfully`,
-      registered_units: registered_units,
-      errors: errors.length > 0 ? errors : undefined
-    });
+      message: 'Exam card uploaded successfully',
+      ...result
+    }, 201)
   } catch (error) {
-    console.error('Error registering units:', error);
-    return c.json({ 
-      error: 'Failed to register units', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    }, 500);
+    console.error('Exam card upload error:', error)
+    return c.json({
+      error: 'Failed to upload exam card',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
   }
-});
+})
 
-// Admin login - SIMPLIFIED without separate OPTIONS handler
-app.post('/auth/admin-login', async (c) => {
-  console.log('Received POST /auth/admin-login');
-  console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()));
-  
+// Fees Structure upload route
+app.post('/fees-structure', fileUploadValidator, async (c) => {
   try {
-    const body = await c.req.json();
-    console.log('Request body:', body);
+    const { registrationNumber, file } = c.req.valid('form')
     
-    const { username, password } = body;
+    const result = await handleFileUpload(registrationNumber, file, 'fees-structure')
     
-    if (!username || !password) {
-      return c.json({ error: 'Username and password required' }, 400);
-    }
-
-    const { rows } = await pool.query('SELECT * FROM admins WHERE username = $1', [username]);
-    if (rows.length === 0) {
-      return c.json({ error: 'Invalid credentials' }, 401);
-    }
-    
-    const admin = rows[0];
-    const valid = await bcrypt.compare(password, admin.password_hash);
-    if (!valid) {
-      return c.json({ error: 'Invalid credentials' }, 401);
-    }
-    
-    const token = jwt.sign(
-      { username: admin.username, admin_id: admin.id }, 
-      process.env.SECRET_KEY, 
-      { expiresIn: '2h' }
-    );
-    
-    return c.json({ token, username: admin.username });
+    return c.json({
+      message: 'Fees structure uploaded successfully',
+      ...result
+    }, 201)
   } catch (error) {
-    console.error('Admin login error:', error);
-    return c.json({ error: 'Server error during login' }, 500);
+    console.error('Fees structure upload error:', error)
+    return c.json({
+      error: 'Failed to upload fees structure',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
   }
-});
+})
+
+// Fees Statement upload route
+app.post('/fees-statement', fileUploadValidator, async (c) => {
+  try {
+    const { registrationNumber, file } = c.req.valid('form')
+    
+    const result = await handleFileUpload(registrationNumber, file, 'fees-statement')
+    
+    return c.json({
+      message: 'Fees statement uploaded successfully',
+      ...result
+    }, 201)
+  } catch (error) {
+    console.error('Fees statement upload error:', error)
+    return c.json({
+      error: 'Failed to upload fees statement',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
+// Results upload route
+app.post('/results', fileUploadValidator, async (c) => {
+  try {
+    const { registrationNumber, file } = c.req.valid('form')
+    
+    const result = await handleFileUpload(registrationNumber, file, 'results')
+    
+    return c.json({
+      message: 'Results uploaded successfully',
+      ...result
+    }, 201)
+  } catch (error) {
+    console.error('Results upload error:', error)
+    return c.json({
+      error: 'Failed to upload results',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
+// Timetable upload route
+app.post('/timetable', fileUploadValidator, async (c) => {
+  try {
+    const { registrationNumber, file } = c.req.valid('form')
+    
+    const result = await handleFileUpload(registrationNumber, file, 'timetable')
+    
+    return c.json({
+      message: 'Timetable uploaded successfully',
+      ...result
+    }, 201)
+  } catch (error) {
+    console.error('Timetable upload error:', error)
+    return c.json({
+      error: 'Failed to upload timetable',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
+// Health check route
+app.get('/health', (c) => {
+  return c.json({ status: 'OK', message: 'File upload service is running' })
+})
+
+// Get documents for a student
+app.get('/documents/:registrationNumber', async (c) => {
+  try {
+    const registrationNumber = c.req.param('registrationNumber')
+    
+    const { rows } = await pool.query(
+      `SELECT * FROM student_documents 
+       WHERE registration_number = $1 
+       ORDER BY uploaded_at DESC`,
+      [registrationNumber]
+    )
+
+    return c.json({
+      success: true,
+      data: rows,
+      count: rows.length
+    })
+  } catch (error) {
+    console.error('Get documents error:', error)
+    return c.json({
+      error: 'Failed to retrieve documents',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
+// =============================================================================
+// END NEW UNIFIED DOCUMENT UPLOAD SYSTEM
+// =============================================================================
 
 // Serve static files from the public directory
 app.use('/*', serveStatic({ root: './public' }));
@@ -2537,7 +1213,7 @@ app.post('/exam-cards', async (c) => {
         contentType.includes('application/vnd.openxmlformats')) {
       
       try {
-        console.log('Processing binary file upload');
+        console.log('Processing binary file upload for exam card');
         
         // Get registration number and filename from query parameters or headers
         const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
@@ -2591,6 +1267,7 @@ app.post('/exam-cards', async (c) => {
           .from('clipstech')
           .createSignedUrl(uploadPath, expiresIn);
           
+        let file_url;
         if (urlError) {
           console.error('Error creating signed URL:', urlError);
           // Fallback to public URL if signed URL fails
@@ -2783,27 +1460,23 @@ app.post('/exam-cards', async (c) => {
           }, 400);
         }
         
-        // Get student_id from registration_number
-        const studentResult = await pool.query(
-          'SELECT id FROM students WHERE registration_number = $1',
-          [registration_number.trim()]
+        // Insert exam card record using registration_number directly
+        const { rows } = await pool.query(
+          `INSERT INTO exam_cards (student_id, file_url) 
+           SELECT s.id, $1 FROM students s 
+           WHERE s.registration_number = $2 
+           RETURNING *`,
+          [file_url, registration_number.trim()]
         );
         
-        if (studentResult.rows.length === 0) {
+        if (rows.length === 0) {
           return c.json({ 
             error: 'Student not found', 
             details: 'No student found with the provided registration number' 
           }, 404);
         }
         
-        const student_id = studentResult.rows[0].id;
-        
-        console.log('Inserting exam card in database:', { registration_number, student_id, file_url });
-        
-        const { rows } = await pool.query(
-          'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) RETURNING *',
-          [student_id, file_url]
-        );
+        console.log('Inserting exam card in database:', { registration_number, student_id: rows[0].student_id, file_url });
         
         return c.json({ 
           message: 'Exam card record saved to database successfully', 
@@ -2847,11 +1520,19 @@ app.post('/exam-cards/:regNumber', async (c) => {
         contentType.includes('application/vnd.openxmlformats')) {
       
       try {
-        console.log('Processing binary file upload for registration:', registration_number);
+        console.log('Processing binary file upload for exam card');
         
-        // Get filename from query or header
+        // Get registration number and filename from query parameters or headers
+        const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
         const fileName = c.req.query('filename') || c.req.header('x-filename') || 'exam_card';
         const fileType = contentType;
+        
+        if (!registration_number) {
+          return c.json({
+            error: 'Missing registration number',
+            details: 'Registration number must be provided via query parameter (?registration_number=) or x-registration-number header'
+          }, 400);
+        }
         
         // Get the binary data from request body
         const binaryData = await c.req.arrayBuffer();
@@ -2907,37 +1588,33 @@ app.post('/exam-cards/:regNumber', async (c) => {
         
         console.log('Binary file uploaded successfully:', file_url);
         
-        // Get student_id from registration_number and save to database
-        const studentResult = await pool.query(
-          'SELECT id FROM students WHERE registration_number = $1',
-          [registration_number]
+        // Insert or update exam card record in database
+        // First check if an exam card already exists for this student
+        const existingCard = await pool.query(
+          'SELECT id FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [studentId]
         );
         
-        if (studentResult.rows.length === 0) {
-          return c.json({ 
-            error: 'Student not found', 
-            details: 'No student found with the provided registration number' 
-          }, 404);
+        if (existingCard.rows.length > 0) {
+          // Update the existing exam card
+          await pool.query(
+            'UPDATE exam_cards SET file_url = $1, created_at = now() WHERE student_id = $2 AND id = $3',
+            [file_url, studentId, existingCard.rows[0].id]
+          );
+        } else {
+          // Insert a new exam card
+          await pool.query(
+            'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
+            [studentId, file_url]
+          );
         }
         
-        const student_id = studentResult.rows[0].id;
-        
-        // Insert or update exam card record in database
-        const { rows } = await pool.query(
-          'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url RETURNING *',
-          [student_id, file_url]
-        );
-        
-        return c.json({
-          message: 'Binary exam card uploaded and saved successfully',
-          file_url: file_url,
-          registration_number: registration_number,
-          upload_path: uploadPath,
-          expires_in_seconds: expiresIn,
-          file_size: binaryData.byteLength,
-          exam_card: rows[0]
+        return c.json({ 
+          message: 'Binary exam card uploaded successfully.', 
+          registration_number,
+          url: file_url,
+          file_size: binaryData.byteLength
         });
-        
       } catch (uploadError) {
         console.error('Error uploading binary file for exam card:', uploadError);
         return c.json({
@@ -2955,87 +1632,46 @@ app.post('/exam-cards/:regNumber', async (c) => {
         
         // Extract file
         const file = formData.get('file');
-        if (!file || !(file instanceof File) || file.size === 0) {
-          return c.json({
-            error: 'Missing or invalid file',
-            details: 'A valid file is required'
-          }, 400);
+        if (!file) {
+          return c.json({ error: 'No file uploaded' }, 400);
         }
-        
-        console.log('File details:', {
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          registration_number
-        });
         
         // Convert File to binary data
         const fileData = await file.arrayBuffer();
         
-        // Upload to Supabase with custom expiry
-        const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
+        // Upload file to Supabase using the helper function
+        const uploadResult = await uploadFileToSupabase(
+          fileData, 
+          'exam_cards', 
+          registration_number
+        );
         
-        const { data, error } = await supabase.storage
-          .from('clipstech')
-          .upload(uploadPath, fileData, { 
-            contentType: file.type,
-            cacheControl: '31536000' // 1 year cache
-          });
-          
-        if (error) {
-          console.error('Error uploading to exam_cards:', error);
-          throw error;
-        }
-
-        // Get the public URL with custom expiry (1 year from now)
-        const expiresIn = 31536000; // 1 year in seconds
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('clipstech')
-          .createSignedUrl(uploadPath, expiresIn);
-          
-        let file_url;
-        if (urlError) {
-          console.error('Error creating signed URL:', urlError);
-          const { data: publicUrlData } = supabase.storage
-            .from('clipstech')
-            .getPublicUrl(uploadPath);
-          file_url = publicUrlData.publicUrl;
+        // Update or insert exam card record in database
+        // First check if an exam card already exists for this student
+        const existingCard = await pool.query(
+          'SELECT id FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
+          [studentId]
+        );
+        
+        if (existingCard.rows.length > 0) {
+          // Update the existing exam card
+          await pool.query(
+            'UPDATE exam_cards SET file_url = $1, created_at = now() WHERE student_id = $2 AND id = $3',
+            [uploadResult.publicUrl, studentId, existingCard.rows[0].id]
+          );
         } else {
-          file_url = urlData.signedUrl;
+          // Insert a new exam card
+          await pool.query(
+            'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2)',
+            [studentId, uploadResult.publicUrl]
+          );
         }
         
-        console.log('File uploaded successfully (legacy mode):', file_url);
-        
-        // Get student_id from registration_number and save to database
-        const studentResult = await pool.query(
-          'SELECT id FROM students WHERE registration_number = $1',
-          [registration_number]
-        );
-        
-        if (studentResult.rows.length === 0) {
-          return c.json({ 
-            error: 'Student not found', 
-            details: 'No student found with the provided registration number' 
-          }, 404);
-        }
-        
-        const student_id = studentResult.rows[0].id;
-        
-        // Insert or update exam card record in database
-        const { rows } = await pool.query(
-          'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url RETURNING *',
-          [student_id, file_url]
-        );
-        
-        return c.json({
-          message: 'Exam card uploaded and saved successfully (legacy mode)',
-          file_url: file_url,
-          registration_number: registration_number,
-          upload_path: uploadPath,
-          expires_in_seconds: expiresIn,
-          exam_card: rows[0]
+        return c.json({ 
+          message: 'Exam card uploaded successfully (legacy mode).', 
+          registration_number,
+          url: uploadResult.publicUrl 
         });
-        
       } catch (uploadError) {
         console.error('Error during multipart file upload:', uploadError);
         return c.json({
@@ -3043,517 +1679,12 @@ app.post('/exam-cards/:regNumber', async (c) => {
           details: uploadError.message
         }, 500);
       }
-    }
-    // Handle JSON data (for saving file URL to database)
-    else if (contentType.includes('application/json')) {
-      try {
-        const data = await c.req.json();
-        console.log('Processing JSON data for registration:', registration_number, data);
-        
-        const { file_url } = data;
-        
-        if (!file_url) {
-          return c.json({
-            error: 'Missing file URL',
-            details: 'File URL is required when saving exam card record'
-          }, 400);
-        }
-        
-        // Get student_id from registration_number
-        const studentResult = await pool.query(
-          'SELECT id FROM students WHERE registration_number = $1',
-          [registration_number]
-        );
-        
-        if (studentResult.rows.length === 0) {
-          return c.json({ 
-            error: 'Student not found', 
-            details: 'No student found with the provided registration number' 
-          }, 404);
-        }
-        
-        const student_id = studentResult.rows[0].id;
-        
-        // Insert or update exam card record in database
-        const { rows } = await pool.query(
-          'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url RETURNING *',
-          [student_id, file_url]
-        );
-        
-        return c.json({ 
-          message: 'Exam card record saved successfully', 
-          registration_number: registration_number,
-          exam_card: rows[0] 
-        });
-        
-      } catch (jsonError) {
-        console.error('Error parsing JSON for exam card:', jsonError);
-        return c.json({
-          error: 'Invalid JSON data',
-          details: jsonError.message
-        }, 400);
-      }
-    } else {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires binary data, multipart/form-data, or application/json'
-      }, 400);
-    }
-  } catch (error) {
-    console.error('Error processing exam card request for registration:', registration_number, error);
-    return c.json({ 
-      error: 'Failed to process exam card request', 
-      details: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    }, 500);
-  }
-});
-
-// Dedicated file upload endpoint for exam cards
-app.post('/exam-cards/upload', async (c) => {
-  try {
-    console.log('POST /exam-cards/upload request received - file upload only');
-    
-    // Check content type to determine handling method
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
-    
-    // Handle binary file upload (preferred method)
-    if (contentType.includes('application/octet-stream') || 
-        contentType.includes('image/') || 
-        contentType.includes('application/pdf') ||
-        contentType.includes('application/msword') ||
-        contentType.includes('application/vnd.openxmlformats')) {
-      
-      try {
-        console.log('Processing binary file upload');
-        
-        // Get registration number and filename from query parameters or headers
-        const registration_number = c.req.query('registration_number') || c.req.header('x-registration-number');
-        const fileName = c.req.query('filename') || c.req.header('x-filename') || 'exam_card';
-        const fileType = contentType;
-        
-        if (!registration_number) {
-          return c.json({
-            error: 'Missing registration number',
-            details: 'Registration number must be provided via query parameter (?registration_number=) or x-registration-number header'
-          }, 400);
-        }
-        
-        // Get the binary data from request body
-        const binaryData = await c.req.arrayBuffer();
-        
-        if (!binaryData || binaryData.byteLength === 0) {
-          return c.json({
-            error: 'Missing file data',
-            details: 'Binary file data is required'
-          }, 400);
-        }
-        
-        console.log('Binary file upload details:', {
-          registration_number,
-          fileName,
-          fileType,
-          size: binaryData.byteLength
-        });
-        
-        // Upload file to Supabase with custom expiry
-        const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${fileName}`;
-        
-        const { data, error } = await supabase.storage
-          .from('clipstech')
-          .upload(uploadPath, binaryData, { 
-            contentType: fileType,
-            cacheControl: '31536000' // 1 year cache
-          });
-          
-        if (error) {
-          console.error('Supabase upload error:', error);
-          return c.json({
-            error: 'Failed to upload file',
-            details: error.message
-          }, 500);
-        }
-        
-        // Create signed URL with custom expiry (1 year)
-        const expiresIn = 31536000; // 1 year in seconds
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('clipstech')
-          .createSignedUrl(uploadPath, expiresIn);
-          
-        let file_url;
-        if (urlError) {
-          console.error('Error creating signed URL, using public URL:', urlError);
-          const { data: publicUrlData } = supabase.storage
-            .from('clipstech')
-            .getPublicUrl(uploadPath);
-          file_url = publicUrlData.publicUrl;
-        } else {
-          file_url = urlData.signedUrl;
-        }
-        
-        console.log('Binary file uploaded successfully:', file_url);
-        
-        return c.json({
-          message: 'Binary file uploaded successfully',
-          file_url: file_url,
-          registration_number: registration_number,
-          upload_path: uploadPath,
-          expires_in_seconds: expiresIn,
-          file_size: binaryData.byteLength,
-          note: 'Use the file_url and registration_number to save the exam card record'
-        });
-        
-      } catch (uploadError) {
-        console.error('Error during binary file upload:', uploadError);
-        return c.json({
-          error: 'Binary file upload failed',
-          details: uploadError.message
-        }, 500);
-      }
-    }
-    // Handle multipart/form-data (legacy support) 
-    else if (contentType.includes('multipart/form-data')) {
-      try {
-        const formData = await c.req.formData();
-        console.log('Form data parsed:', [...formData.keys()]);
-        
-        const registration_number = formData.get('registration_number');
-        const file = formData.get('file');
-        
-        // Validate required fields
-        if (!registration_number) {
-          return c.json({
-            error: 'Missing registration number',
-            details: 'Registration number is required for file upload'
-          }, 400);
-        }
-        
-        if (!file || !file instanceof File || file.size === 0) {
-          return c.json({
-            error: 'Missing or invalid file',
-            details: 'A valid file is required'
-          }, 400);
-        }
-        
-        console.log('Uploading file (legacy mode):', {
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          registration_number
-        });
-        
-        // Upload file to Supabase with custom expiry
-        const fileData = await file.arrayBuffer();
-        const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
-        
-        const { data, error } = await supabase.storage
-          .from('clipstech')
-          .upload(uploadPath, fileData, { 
-            contentType: file.type,
-            cacheControl: '31536000' // 1 year cache
-          });
-          
-        if (error) {
-          console.error('Supabase upload error:', error);
-          return c.json({
-            error: 'Failed to upload file',
-            details: error.message
-          }, 500);
-        }
-        
-        // Create signed URL with custom expiry (1 year)
-        const expiresIn = 31536000; // 1 year in seconds
-        const { data: urlData, error: urlError } = await supabase.storage
-          .from('clipstech')
-          .createSignedUrl(uploadPath, expiresIn);
-          
-        let file_url;
-        if (urlError) {
-          console.error('Error creating signed URL, using public URL:', urlError);
-          const { data: publicUrlData } = supabase.storage
-            .from('clipstech')
-            .getPublicUrl(uploadPath);
-          file_url = publicUrlData.publicUrl;
-        } else {
-          file_url = urlData.signedUrl;
-        }
-        
-        console.log('File uploaded successfully (legacy mode):', file_url);
-        
-        return c.json({
-          message: 'File uploaded successfully (legacy mode)',
-          file_url: file_url,
-          registration_number: registration_number,
-          upload_path: uploadPath,
-          expires_in_seconds: expiresIn,
-          note: 'Use the file_url and registration_number to save the exam card record'
-        });
-        
-      } catch (uploadError) {
-        console.error('Error during file upload:', uploadError);
-        return c.json({
-          error: 'File upload failed',
-          details: uploadError.message
-        }, 500);
-      }
-    } else {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'This endpoint requires either binary data (application/octet-stream, image/*, application/pdf) or multipart/form-data for file uploads'
-      }, 400);
-    }
-  } catch (error) {
-    console.error('Error in file upload endpoint:', error);
-    return c.json({
-      error: 'Upload endpoint error',
-      details: error.message
-    }, 500);
-  }
-});
-
-// Save exam card record to database (after file upload)
-app.post('/exam-cards/save', async (c) => {
-  try {
-    console.log('POST /exam-cards/save request received - save record only');
-    
-    const data = await c.req.json();
-    const { registration_number, file_url } = data;
-    
-    // Validate required fields
-    if (!registration_number || !file_url) {
-      return c.json({ 
-        error: 'Missing required fields', 
-        details: 'Both registration_number and file_url are required'
-      }, 400);
-    }
-    
-    // Validate field formats
-    if (typeof registration_number !== 'string' || registration_number.trim().length === 0) {
-      return c.json({
-        error: 'Invalid registration number',
-        details: 'Registration number must be a non-empty string'
-      }, 400);
-    }
-    
-    if (typeof file_url !== 'string' || file_url.trim().length === 0) {
-      return c.json({
-        error: 'Invalid file URL',
-        details: 'File URL must be a non-empty string'
-      }, 400);
-    }
-    
-    // Get student_id from registration_number
-    const studentResult = await pool.query(
-      'SELECT id FROM students WHERE registration_number = $1',
-      [registration_number.trim()]
-    );
-    
-    if (studentResult.rows.length === 0) {
-      return c.json({ 
-        error: 'Student not found', 
-        details: 'No student found with the provided registration number' 
-      }, 404);
-    }
-    
-    const student_id = studentResult.rows[0].id;
-    
-    console.log('Saving exam card record to database:', { 
-      registration_number: registration_number.trim(), 
-      student_id, 
-      file_url: file_url.trim() 
-    });
-    
-    // Insert or update exam card record in database
-    const { rows } = await pool.query(
-      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url RETURNING *',
-      [student_id, file_url.trim()]
-    );
-    
-    return c.json({ 
-      message: 'Exam card record saved successfully', 
-      exam_card: rows[0] 
-    });
-    
-  } catch (error) {
-    console.error('Error saving exam card record:', error);
-    return c.json({ 
-      error: 'Failed to save exam card record', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Upload exam card with file upload (admin)
-app.post('/students/registration/:regNumber/upload-exam-card', async (c) => {
-  try {
-    const registration_number = c.req.param('regNumber');
-    console.log('Uploading exam card for student with registration number:', registration_number);
-    
-    // Get student ID from registration number
-    const studentResult = await pool.query(
-      'SELECT id FROM students WHERE registration_number = $1',
-      [registration_number]
-    );
-    
-    if (studentResult.rows.length === 0) {
-      return c.json({ 
-        error: 'Student not found', 
-        details: 'No student found with the provided registration number' 
-      }, 404);
-    }
-    
-    const student_id = studentResult.rows[0].id;
-    
-    // Check content type to determine handling method
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
-    
-    // Handle binary file upload
-    if (contentType.includes('application/octet-stream') || 
-        contentType.includes('image/') || 
-        contentType.includes('application/pdf')) {
-      
-      console.log('Processing binary file upload for exam card');
-      
-      // Get filename from query or header
-      const fileName = c.req.query('filename') || c.req.header('x-filename') || 'exam_card';
-      
-      // Get the binary data from request body
-      const binaryData = await c.req.arrayBuffer();
-      
-      if (!binaryData || binaryData.byteLength === 0) {
-        return c.json({
-          error: 'Missing file data',
-          details: 'Binary file data is required'
-        }, 400);
-      }
-      
-      console.log('Binary exam card details:', {
-        registration_number,
-        fileName,
-        contentType,
-        size: binaryData.byteLength
-      });
-      
-      // Upload binary file to Supabase
-      const uploadResult = await uploadFileToSupabase(
-        binaryData, 
-        'exam_cards', 
-        registration_number
-      );
-      
-      // Update or insert exam card record in database
-      await pool.query(
-        'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
-        [student_id, uploadResult.publicUrl]
-      );
-      
-      return c.json({ 
-        message: 'Binary exam card uploaded successfully.', 
-        registration_number,
-        url: uploadResult.publicUrl,
-        file_size: binaryData.byteLength
-      });
-    }
-    // Handle multipart/form-data (legacy support)
-    else if (contentType.includes('multipart/form-data')) {
-      // Parse multipart form data
-      const formData = await c.req.formData();
-      console.log('Form data received:', [...formData.keys()]);
-      
-      // Extract file
-      const file = formData.get('file');
-      if (!file) {
-        return c.json({ error: 'No file uploaded' }, 400);
-      }
-      
-      // Convert File to binary data
-      const fileData = await file.arrayBuffer();
-      
-      // Upload file to Supabase using the helper function
-      const uploadResult = await uploadFileToSupabase(
-        fileData, 
-        'exam_cards', 
-        registration_number
-      );
-      
-      // Update or insert exam card record in database
-      await pool.query(
-        'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
-        [student_id, uploadResult.publicUrl]
-      );
-      
-      return c.json({ 
-        message: 'Exam card uploaded successfully (legacy mode).', 
-        registration_number,
-        url: uploadResult.publicUrl 
-      });
     } else {
       return c.json({
         error: 'Invalid content type',
         details: 'This endpoint requires either binary data or multipart/form-data'
       }, 400);
     }
-  } catch (error) {
-    console.error('Error uploading exam card:', error);
-    return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
-  }
-});
-
-// Keep the old endpoint for backward compatibility
-app.post('/students/:id/upload-exam-card', async (c) => {
-  try {
-    const studentId = c.req.param('id');
-    
-    // Get registration number from student ID
-    const studentResult = await pool.query(
-      'SELECT registration_number FROM students WHERE id = $1',
-      [studentId]
-    );
-    
-    if (studentResult.rows.length === 0) {
-      return c.json({ error: 'Student not found' }, 404);
-    }
-    
-    const registration_number = studentResult.rows[0].registration_number;
-    
-    // Parse multipart form data
-    const formData = await c.req.formData();
-    console.log('Form data received:', [...formData.keys()]);
-    
-    // Extract file
-    const file = formData.get('file');
-    if (!file) {
-      return c.json({ error: 'No file uploaded' }, 400);
-    }
-    
-    // Convert File to our expected format for uploadFileToSupabase
-    const fileData = await file.arrayBuffer();
-    const fileObj = {
-      name: file.name,
-      type: file.type,
-      data: new Uint8Array(fileData)
-    };
-    
-    // Upload file to Supabase using the helper function
-    const uploadResult = await uploadFileToSupabase(
-      fileObj, 
-      'exam_cards', 
-      registration_number
-    );
-    
-    // Update or insert exam card record in database
-    await pool.query(
-      'INSERT INTO exam_cards (student_id, file_url) VALUES ($1, $2) ON CONFLICT (student_id) DO UPDATE SET file_url = EXCLUDED.file_url',
-      [studentId, uploadResult.publicUrl]
-    );
-    
-    return c.json({ 
-      message: 'Exam card uploaded successfully.', 
-      url: uploadResult.publicUrl,
-      note: 'This endpoint is deprecated, please use /students/registration/:regNumber/upload-exam-card instead'
-    });
   } catch (error) {
     console.error('Error uploading exam card:', error);
     return c.json({ error: 'Failed to upload exam card', details: error.message }, 500);
@@ -4057,6 +2188,11 @@ app.get('/timetable/:course/:semester', async (c) => {
       details: error.message 
     }, 500);
   }
+});
+
+// Test route for new unified upload page
+app.get('/test-unified-upload', (c) => {
+  return c.redirect('/test/test-unified-upload.html');
 });
 
 // Export the app object for use in Vercel API handler

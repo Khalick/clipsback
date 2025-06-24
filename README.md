@@ -131,6 +131,24 @@ npm run dev
 - `POST /students/:id/exam-card` - Upload an exam card for a student
 - `POST /students/:id/upload-exam-card` - Upload an exam card file for a student
 
+## New Unified Document Upload System
+
+### Document Upload Endpoints
+- `POST /exam-card` - Upload exam card document
+- `POST /fees-structure` - Upload fees structure document  
+- `POST /fees-statement` - Upload fees statement document
+- `POST /results` - Upload results document
+- `POST /timetable` - Upload timetable document
+- `GET /documents/:registrationNumber` - Get all documents for a student
+
+### Legacy Endpoints (Deprecated)
+
+### Exam Cards
+- `GET /exam-cards` - Get all exam cards
+- `GET /students/:id/exam-card` - Get the latest exam card for a student
+- `POST /students/:id/exam-card` - Upload an exam card for a student
+- `POST /students/:id/upload-exam-card` - Upload an exam card file for a student
+
 ## Static Files
 
 Static files are served from the `public` directory. The admin dashboard is accessible at the root URL.
