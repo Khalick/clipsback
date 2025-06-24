@@ -510,12 +510,44 @@ app.post('/students/registration/:regNumber/academic-leave', async (c) => {
   }
 });
 
-// Deregister a student by registration number
+// Deregister a student by registration number (with slash support)
+app.post('/students/registration/:course/:number/:year/deregister', async (c) => {
+  try {
+    const course = c.req.param('course');
+    const number = c.req.param('number');
+    const year = c.req.param('year');
+    const registration_number = `${course}/${number}/${year}`;
+    console.log('Deregistering student with registration number:', registration_number);
+    
+    // Also keep the original route for backward compatibility
+    return await deregisterStudentByRegNumber(c, registration_number);
+  } catch (error) {
+    console.error('Error deregistering student:', error);
+    return c.json({ 
+      error: 'Failed to deregister student', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Original deregister route for registration numbers without slashes
 app.post('/students/registration/:regNumber/deregister', async (c) => {
   try {
     const registration_number = c.req.param('regNumber');
     console.log('Deregistering student with registration number:', registration_number);
     
+    return await deregisterStudentByRegNumber(c, registration_number);
+  } catch (error) {
+    console.error('Error deregistering student:', error);
+    return c.json({ 
+      error: 'Failed to deregister student', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Helper function to deregister student by registration number
+async function deregisterStudentByRegNumber(c, registration_number) {    
     // Get reason from body if provided
     let reason = '';
     try {
@@ -542,14 +574,7 @@ app.post('/students/registration/:regNumber/deregister', async (c) => {
       message: 'Student deregistered successfully', 
       student: rows[0] 
     });
-  } catch (error) {
-    console.error('Error deregistering student:', error);
-    return c.json({ 
-      error: 'Failed to deregister student', 
-      details: error.message 
-    }, 500);
-  }
-});
+}
 
 // Bulk deregister students
 app.post('/students/deregister', async (c) => {
