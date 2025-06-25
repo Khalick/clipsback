@@ -243,6 +243,224 @@ app.get('/students/status/:statusType', async (c) => {
   }
 });
 
+// Create new student
+app.post('/students', async (c) => {
+  try {
+    console.log('Creating new student');
+    let studentData = {};
+    let photoUrl = null;
+    
+    // Check content type to determine how to parse the request
+    const contentType = c.req.header('content-type') || '';
+    
+    if (contentType.includes('multipart/form-data')) {
+      // Handle multipart form data (with file upload)
+      console.log('Processing multipart form data for student creation');
+        try {
+        const formData = await c.req.formData();
+        
+        // Extract student data from form first (without using it yet)
+        const tempStudentData = {
+          name: formData.get('name')?.toString(),
+          registration_number: formData.get('registration_number')?.toString(),
+          course: formData.get('course')?.toString(),
+          level_of_study: formData.get('level_of_study')?.toString(),
+          national_id: formData.get('national_id')?.toString() || null,
+          birth_certificate: formData.get('birth_certificate')?.toString() || null,
+          date_of_birth: formData.get('date_of_birth')?.toString() || null,
+          password: formData.get('password')?.toString() || null,
+          email: formData.get('email')?.toString() || null
+        };
+        
+        // Validate required fields early
+        if (!tempStudentData.name || !tempStudentData.registration_number || !tempStudentData.course || !tempStudentData.level_of_study) {
+          return c.json({ 
+            error: 'Missing required fields', 
+            details: 'Name, registration number, course, and level of study are required' 
+          }, 400);
+        }
+        
+        // Handle photo upload FIRST if present
+        const photoFile = formData.get('photo');
+        if (photoFile && photoFile instanceof File && photoFile.size > 0) {
+          console.log('Processing photo upload:', photoFile.name, photoFile.size);
+          
+          // Validate photo file type
+          const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+          if (!allowedTypes.includes(photoFile.type)) {
+            return c.json({ 
+              error: 'Invalid photo type', 
+              details: 'Photo must be JPEG, JPG, PNG, or GIF format' 
+            }, 400);
+          }
+          
+          // Validate photo file size (max 5MB)
+          if (photoFile.size > 5 * 1024 * 1024) {
+            return c.json({ 
+              error: 'Photo file too large', 
+              details: 'Photo must be less than 5MB' 
+            }, 400);
+          }
+          
+          try {
+            console.log('Uploading student photo to Supabase...');
+            const uploadResult = await uploadFileToSupabase(
+              photoFile,
+              'photos',
+              `student_${tempStudentData.registration_number}`
+            );
+            photoUrl = uploadResult.publicUrl;
+            console.log('Photo uploaded successfully:', photoUrl);
+          } catch (uploadError) {
+            console.error('Photo upload failed:', uploadError.message);
+            return c.json({ 
+              error: 'Photo upload failed', 
+              details: uploadError.message 
+            }, 500);
+          }
+        }
+        
+        // Now assign the validated student data
+        studentData = tempStudentData;
+        
+      } catch (formError) {
+        console.error('Error parsing form data:', formError);
+        return c.json({ 
+          error: 'Invalid form data', 
+          details: formError.message 
+        }, 400);
+      }
+    } else {
+      // Handle JSON request
+      console.log('Processing JSON data for student creation');
+      
+      try {
+        studentData = await c.req.json();
+      } catch (jsonError) {
+        console.error('Error parsing JSON:', jsonError);
+        return c.json({ 
+          error: 'Invalid JSON data', 
+          details: jsonError.message 
+        }, 400);
+      }
+    }
+    
+    // Validate required fields
+    if (!studentData.name || !studentData.registration_number || !studentData.course || !studentData.level_of_study) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'Name, registration number, course, and level of study are required' 
+      }, 400);
+    }
+      console.log('Student data received:', {
+      ...studentData,
+      password: studentData.password ? '[PROVIDED]' : '[NOT PROVIDED]'
+    });
+    
+    // Hash password if provided
+    let hashedPassword = null;
+    if (studentData.password) {
+      try {
+        hashedPassword = await bcrypt.hash(studentData.password, 10);
+      } catch (hashError) {
+        console.error('Error hashing password:', hashError);
+        return c.json({ 
+          error: 'Password processing failed', 
+          details: hashError.message 
+        }, 500);
+      }
+    }
+    
+    // Log all values that will be inserted to identify undefined values
+    const insertValues = [
+      studentData.name,
+      studentData.registration_number,
+      studentData.course,
+      studentData.level_of_study,
+      studentData.national_id,
+      studentData.birth_certificate,
+      studentData.date_of_birth,
+      hashedPassword,
+      photoUrl,
+      studentData.email,
+      'active'
+    ];
+    
+    console.log('Insert values:', insertValues.map((val, idx) => `$${idx + 1}: ${val === undefined ? 'UNDEFINED' : val === null ? 'NULL' : typeof val === 'string' ? `"${val}"` : val}`));
+    
+    // Check if student with this registration number already exists
+    try {
+      const { rows: existingStudents } = await pool.query(
+        'SELECT id FROM students WHERE registration_number = $1',
+        [studentData.registration_number]
+      );
+      
+      if (existingStudents.length > 0) {
+        return c.json({ 
+          error: 'Student already exists', 
+          details: `A student with registration number '${studentData.registration_number}' already exists` 
+        }, 409);
+      }
+    } catch (checkError) {
+      console.error('Error checking for existing student:', checkError);
+      return c.json({ 
+        error: 'Database error during validation', 
+        details: checkError.message 
+      }, 500);
+    }    // Insert student into database
+    try {
+      const { rows } = await pool.query(`
+        INSERT INTO students (
+          name, 
+          registration_number, 
+          course, 
+          level_of_study, 
+          national_id, 
+          birth_certificate, 
+          date_of_birth, 
+          password, 
+          photo_url,
+          email,
+          status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        RETURNING id, name, registration_number, course, level_of_study, national_id, birth_certificate, date_of_birth, photo_url, email, status
+      `, insertValues);
+      
+      const newStudent = rows[0];
+      console.log('Student created successfully:', newStudent.id);
+      
+      return c.json({
+        message: 'Student created successfully',
+        student: newStudent
+      }, 201);
+      
+    } catch (insertError) {
+      console.error('Error inserting student:', insertError);
+      
+      // Handle specific database errors
+      if (insertError.code === '23505') { // Unique constraint violation
+        return c.json({ 
+          error: 'Student already exists', 
+          details: 'A student with this registration number already exists' 
+        }, 409);
+      }
+      
+      return c.json({ 
+        error: 'Failed to create student', 
+        details: insertError.message 
+      }, 500);
+    }
+    
+  } catch (error) {
+    console.error('Error creating student:', error);
+    return c.json({ 
+      error: 'Internal server error', 
+      details: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    }, 500);
+  }
+});
+
 // Promote students endpoint
 app.post('/students/promote', async (c) => {
   try {
@@ -936,12 +1154,82 @@ async function saveFileLocally(file, fileName) {
   }
 }
 
-// Exam Card upload route
-app.post('/exam-card', fileUploadValidator, async (c) => {
+// Exam Card upload route with flexible FormData handling
+app.post('/exam-card', async (c) => {
   try {
-    const { registrationNumber, file } = c.req.valid('form')
+    console.log('Exam card upload request received')
     
-    const result = await handleFileUpload(registrationNumber, file, 'exam-card')
+    // Get content type for debugging
+    const contentType = c.req.header('content-type') || ''
+    console.log('Content-Type:', contentType)
+    
+    // Try to parse FormData with error handling
+    let formData
+    try {
+      formData = await c.req.formData()
+      console.log('FormData parsed successfully')
+      console.log('Form fields:', [...formData.keys()])
+    } catch (formError) {
+      console.error('FormData parsing error:', formError)
+      return c.json({
+        error: 'Malformed FormData request',
+        details: 'Failed to parse body as FormData. Please ensure you are sending valid multipart/form-data.',
+        contentType: contentType
+      }, 400)
+    }
+    
+    // Extract fields with flexible field name matching
+    let registrationNumber = formData.get('registrationNumber') || 
+                            formData.get('registration_number') || 
+                            formData.get('regNumber') ||
+                            formData.get('reg_number')
+    
+    let file = formData.get('file') || 
+               formData.get('examCard') || 
+               formData.get('exam_card') ||
+               formData.get('document')
+    
+    console.log('Extracted fields:', {
+      registrationNumber: registrationNumber ? 'present' : 'missing',
+      file: file ? `present (${file.name}, ${file.size} bytes)` : 'missing',
+      allFields: [...formData.keys()]
+    })
+    
+    // Validate required fields
+    if (!registrationNumber || typeof registrationNumber !== 'string') {
+      return c.json({
+        error: 'Registration number is required',
+        details: 'Please provide registrationNumber field in FormData',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (!file || !(file instanceof File)) {
+      return c.json({
+        error: 'File is required',
+        details: 'Please provide a valid file in FormData',
+        receivedFields: [...formData.keys()],
+        fileType: file ? typeof file : 'undefined'
+      }, 400)
+    }
+    
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({
+        error: 'File size must be less than 10MB',
+        actualSize: `${(file.size / 1024 / 1024).toFixed(2)}MB`
+      }, 400)
+    }
+    
+    // Validate file size (min 1KB)
+    if (file.size < 1024) {
+      return c.json({
+        error: 'File appears to be empty or too small',
+        actualSize: `${file.size} bytes`
+      }, 400)
+    }
+    
+    const result = await handleFileUpload(registrationNumber.trim(), file, 'exam-card')
     
     return c.json({
       message: 'Exam card uploaded successfully',
@@ -951,17 +1239,57 @@ app.post('/exam-card', fileUploadValidator, async (c) => {
     console.error('Exam card upload error:', error)
     return c.json({
       error: 'Failed to upload exam card',
-      details: error instanceof Error ? error.message : 'Unknown error'
+      details: error instanceof Error ? error.message : 'Unknown error',
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     }, 500)
   }
 })
 
-// Fees Structure upload route
-app.post('/fees-structure', fileUploadValidator, async (c) => {
+// Fees Structure upload route with flexible FormData handling
+app.post('/fees-structure', async (c) => {
   try {
-    const { registrationNumber, file } = c.req.valid('form')
+    console.log('Fees structure upload request received')
     
-    const result = await handleFileUpload(registrationNumber, file, 'fees-structure')
+    let formData
+    try {
+      formData = await c.req.formData()
+      console.log('FormData parsed successfully for fees-structure')
+    } catch (formError) {
+      console.error('FormData parsing error:', formError)
+      return c.json({
+        error: 'Malformed FormData request',
+        details: 'Failed to parse body as FormData'
+      }, 400)
+    }
+    
+    let registrationNumber = formData.get('registrationNumber') || 
+                            formData.get('registration_number') || 
+                            formData.get('regNumber')
+    
+    let file = formData.get('file') || 
+               formData.get('feesStructure') || 
+               formData.get('fees_structure') ||
+               formData.get('document')
+    
+    if (!registrationNumber || typeof registrationNumber !== 'string') {
+      return c.json({
+        error: 'Registration number is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (!file || !(file instanceof File) || file.size === 0) {
+      return c.json({
+        error: 'Valid file is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({ error: 'File size must be less than 10MB' }, 400)
+    }
+    
+    const result = await handleFileUpload(registrationNumber.trim(), file, 'fees-structure')
     
     return c.json({
       message: 'Fees structure uploaded successfully',
@@ -976,12 +1304,49 @@ app.post('/fees-structure', fileUploadValidator, async (c) => {
   }
 })
 
-// Fees Statement upload route
-app.post('/fees-statement', fileUploadValidator, async (c) => {
+// Fees Statement upload route with flexible FormData handling
+app.post('/fees-statement', async (c) => {
   try {
-    const { registrationNumber, file } = c.req.valid('form')
+    console.log('Fees statement upload request received')
     
-    const result = await handleFileUpload(registrationNumber, file, 'fees-statement')
+    let formData
+    try {
+      formData = await c.req.formData()
+    } catch (formError) {
+      return c.json({
+        error: 'Malformed FormData request',
+        details: 'Failed to parse body as FormData'
+      }, 400)
+    }
+    
+    let registrationNumber = formData.get('registrationNumber') || 
+                            formData.get('registration_number') || 
+                            formData.get('regNumber')
+    
+    let file = formData.get('file') || 
+               formData.get('feesStatement') || 
+               formData.get('fees_statement') ||
+               formData.get('document')
+    
+    if (!registrationNumber || typeof registrationNumber !== 'string') {
+      return c.json({
+        error: 'Registration number is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (!file || !(file instanceof File) || file.size === 0) {
+      return c.json({
+        error: 'Valid file is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({ error: 'File size must be less than 10MB' }, 400)
+    }
+    
+    const result = await handleFileUpload(registrationNumber.trim(), file, 'fees-statement')
     
     return c.json({
       message: 'Fees statement uploaded successfully',
@@ -996,12 +1361,49 @@ app.post('/fees-statement', fileUploadValidator, async (c) => {
   }
 })
 
-// Fees Receipt upload route
-app.post('/fees-receipt', fileUploadValidator, async (c) => {
+// Fees Receipt upload route with flexible FormData handling
+app.post('/fees-receipt', async (c) => {
   try {
-    const { registrationNumber, file } = c.req.valid('form')
+    console.log('Fees receipt upload request received')
     
-    const result = await handleFileUpload(registrationNumber, file, 'fees-receipt')
+    let formData
+    try {
+      formData = await c.req.formData()
+    } catch (formError) {
+      return c.json({
+        error: 'Malformed FormData request',
+        details: 'Failed to parse body as FormData'
+      }, 400)
+    }
+    
+    let registrationNumber = formData.get('registrationNumber') || 
+                            formData.get('registration_number') || 
+                            formData.get('regNumber')
+    
+    let file = formData.get('file') || 
+               formData.get('feesReceipt') || 
+               formData.get('fees_receipt') ||
+               formData.get('document')
+    
+    if (!registrationNumber || typeof registrationNumber !== 'string') {
+      return c.json({
+        error: 'Registration number is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (!file || !(file instanceof File) || file.size === 0) {
+      return c.json({
+        error: 'Valid file is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({ error: 'File size must be less than 10MB' }, 400)
+    }
+    
+    const result = await handleFileUpload(registrationNumber.trim(), file, 'fees-receipt')
     
     return c.json({
       message: 'Fees receipt uploaded successfully',
@@ -1016,12 +1418,49 @@ app.post('/fees-receipt', fileUploadValidator, async (c) => {
   }
 })
 
-// Results upload route
-app.post('/results', fileUploadValidator, async (c) => {
+// Results upload route with flexible FormData handling
+app.post('/results', async (c) => {
   try {
-    const { registrationNumber, file } = c.req.valid('form')
+    console.log('Results upload request received')
     
-    const result = await handleFileUpload(registrationNumber, file, 'results')
+    let formData
+    try {
+      formData = await c.req.formData()
+    } catch (formError) {
+      return c.json({
+        error: 'Malformed FormData request',
+        details: 'Failed to parse body as FormData'
+      }, 400)
+    }
+    
+    let registrationNumber = formData.get('registrationNumber') || 
+                            formData.get('registration_number') || 
+                            formData.get('regNumber')
+    
+    let file = formData.get('file') || 
+               formData.get('results') || 
+               formData.get('result') ||
+               formData.get('document')
+    
+    if (!registrationNumber || typeof registrationNumber !== 'string') {
+      return c.json({
+        error: 'Registration number is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (!file || !(file instanceof File) || file.size === 0) {
+      return c.json({
+        error: 'Valid file is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({ error: 'File size must be less than 10MB' }, 400)
+    }
+    
+    const result = await handleFileUpload(registrationNumber.trim(), file, 'results')
     
     return c.json({
       message: 'Results uploaded successfully',
@@ -1036,12 +1475,49 @@ app.post('/results', fileUploadValidator, async (c) => {
   }
 })
 
-// Timetable upload route
-app.post('/timetable', fileUploadValidator, async (c) => {
+// Timetable upload route with flexible FormData handling
+app.post('/timetable', async (c) => {
   try {
-    const { registrationNumber, file } = c.req.valid('form')
+    console.log('Timetable upload request received')
     
-    const result = await handleFileUpload(registrationNumber, file, 'timetable')
+    let formData
+    try {
+      formData = await c.req.formData()
+    } catch (formError) {
+      return c.json({
+        error: 'Malformed FormData request',
+        details: 'Failed to parse body as FormData'
+      }, 400)
+    }
+    
+    let registrationNumber = formData.get('registrationNumber') || 
+                            formData.get('registration_number') || 
+                            formData.get('regNumber')
+    
+    let file = formData.get('file') || 
+               formData.get('timetable') || 
+               formData.get('schedule') ||
+               formData.get('document')
+    
+    if (!registrationNumber || typeof registrationNumber !== 'string') {
+      return c.json({
+        error: 'Registration number is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (!file || !(file instanceof File) || file.size === 0) {
+      return c.json({
+        error: 'Valid file is required',
+        receivedFields: [...formData.keys()]
+      }, 400)
+    }
+    
+    if (file.size > 10 * 1024 * 1024) {
+      return c.json({ error: 'File size must be less than 10MB' }, 400)
+    }
+    
+    const result = await handleFileUpload(registrationNumber.trim(), file, 'timetable')
     
     return c.json({
       message: 'Timetable uploaded successfully',
@@ -2390,23 +2866,23 @@ app.post('/students/:studentId/allocate-units', async (c) => {
           
           // Check if already allocated
           const { rows: existingRows } = await client.query(
-            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4',
-            [studentId, unit_id, semester, academic_year]
+            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4 AND status != $5',
+            [studentId, unit_id, semester, academic_year, 'cancelled']
           );
           
           if (existingRows.length > 0) {
-            errors.push(`Unit ${unit.unit_code} (${unit.unit_name}) is already allocated to this student for this semester`);
+            errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
             continue;
           }
           
-          // Allocate the unit
-          const { rows: allocatedRows } = await client.query(
-            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, notes) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-            [studentId, unit_id, semester, academic_year, notes]
+          // Insert allocation
+          const { rows: insertedRows } = await client.query(
+            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [studentId, unit_id, semester, academic_year, 'allocated', notes]
           );
           
           allocatedUnits.push({
-            ...allocatedRows[0],
+            ...insertedRows[0],
             unit_name: unit.unit_name,
             unit_code: unit.unit_code
           });
@@ -2481,73 +2957,149 @@ app.post('/students/registration/:regNumber/allocate-units', async (c) => {
   }
 });
 
-// Get allocated units for a student (student or admin can view)
-app.get('/students/:studentId/allocated-units', async (c) => {
+// Allocate units to a student by registration number with slash support (admin function)
+app.post('/students/registration/:course/:number/:year/allocate-units', async (c) => {
   try {
-    const { studentId } = c.req.param();
-    const { semester, academic_year, status } = c.req.query();
+    const { course, number, year } = c.req.param();
+    const registration_number = `${course}/${number}/${year}`;
     
-    let query = `
-      SELECT 
-        au.*,
-        u.unit_name,
-        u.unit_code,
-        s.name as student_name,
-        s.registration_number
-      FROM allocated_units au
-      JOIN units u ON au.unit_id = u.id
-      JOIN students s ON au.student_id = s.id
-      WHERE au.student_id = $1
-    `;
+    console.log('Allocating units for registration number:', registration_number);
     
-    const params = [studentId];
-    let paramCount = 1;
+    // Find student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [registration_number]
+    );
     
-    if (semester) {
-      paramCount++;
-      query += ` AND au.semester = $${paramCount}`;
-      params.push(semester);
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
     }
     
-    if (academic_year) {
-      paramCount++;
-      query += ` AND au.academic_year = $${paramCount}`;
-      params.push(academic_year);
+    const studentId = studentRows[0].id;
+    const body = await c.req.json();
+    const { unit_ids, semester = 1, academic_year = '2024/2025', notes } = body;
+    
+    if (!unit_ids || !Array.isArray(unit_ids) || unit_ids.length === 0) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'unit_ids array is required and cannot be empty' 
+      }, 400);
     }
+
+    // Verify student exists
+    const { rows: studentVerifyRows } = await pool.query(
+      'SELECT id, registration_number, name FROM students WHERE id = $1',
+      [studentId]
+    );
     
-    if (status) {
-      paramCount++;
-      query += ` AND au.status = $${paramCount}`;
-      params.push(status);
+    if (studentVerifyRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'Student ID not found in database' 
+      }, 404);
     }
+
+    const student = studentVerifyRows[0];
     
-    query += ' ORDER BY au.allocated_at DESC';
-    
-    const { rows } = await pool.query(query, params);
-    
-    return c.json({
-      success: true,
-      data: rows,
-      count: rows.length
-    });
+    // Begin transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const allocatedUnits = [];
+      const errors = [];
+      
+      for (const unit_id of unit_ids) {
+        try {
+          // Check if unit exists
+          const { rows: unitRows } = await client.query(
+            'SELECT id, unit_name, unit_code FROM units WHERE id = $1',
+            [unit_id]
+          );
+          
+          if (unitRows.length === 0) {
+            errors.push(`Unit with ID ${unit_id} not found`);
+            continue;
+          }
+          
+          const unit = unitRows[0];
+          
+          // Check if already allocated
+          const { rows: existingRows } = await client.query(
+            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4 AND status != $5',
+            [studentId, unit_id, semester, academic_year, 'cancelled']
+          );
+          
+          if (existingRows.length > 0) {
+            errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
+            continue;
+          }
+          
+          // Insert allocation
+          const { rows: insertedRows } = await client.query(
+            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [studentId, unit_id, semester, academic_year, 'allocated', notes]
+          );
+          
+          allocatedUnits.push({
+            ...insertedRows[0],
+            unit_name: unit.unit_name,
+            unit_code: unit.unit_code
+          });
+          
+        } catch (unitError) {
+          console.error(`Error allocating unit ${unit_id}:`, unitError);
+          errors.push(`Failed to allocate unit ${unit_id}: ${unitError.message}`);
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      return c.json({
+        message: 'Unit allocation completed',
+        student: {
+          id: student.id,
+          registration_number: student.registration_number,
+          name: student.name
+        },
+        allocated_units: allocatedUnits,
+        summary: {
+          total_requested: unit_ids.length,
+          successfully_allocated: allocatedUnits.length,
+          errors: errors.length
+        },
+        errors: errors.length > 0 ? errors : undefined
+      });
+      
+    } catch (txError) {
+      await client.query('ROLLBACK');
+      throw txError;
+    } finally {
+      client.release();
+    }
     
   } catch (error) {
-    console.error('Error fetching allocated units:', error);
+    console.error('Error allocating units:', error);
     return c.json({ 
-      error: 'Failed to fetch allocated units', 
+      error: 'Failed to allocate units', 
       details: error.message 
     }, 500);
   }
 });
 
-// Get allocated units by registration number
+// Get allocated units for a student by registration number (simple format)
 app.get('/students/registration/:regNumber/allocated-units', async (c) => {
   try {
     const { regNumber } = c.req.param();
     
+    console.log('Getting allocated units for registration number:', regNumber);
+    
     // Find student by registration number
     const { rows: studentRows } = await pool.query(
-      'SELECT id FROM students WHERE registration_number = $1',
+      'SELECT id, name, registration_number FROM students WHERE registration_number = $1',
       [regNumber]
     );
     
@@ -2558,162 +3110,52 @@ app.get('/students/registration/:regNumber/allocated-units', async (c) => {
       }, 404);
     }
     
-    // Forward to the main endpoint
-    const studentId = studentRows[0].id;
-    const { semester, academic_year, status } = c.req.query();
+    const student = studentRows[0];
     
-    let query = `
+    // Get allocated units for this student
+    const { rows: allocatedUnits } = await pool.query(`
       SELECT 
         au.*,
         u.unit_name,
-        u.unit_code,
-        s.name as student_name,
-        s.registration_number
+        u.unit_code
       FROM allocated_units au
       JOIN units u ON au.unit_id = u.id
-      JOIN students s ON au.student_id = s.id
       WHERE au.student_id = $1
-    `;
-    
-    const params = [studentId];
-    let paramCount = 1;
-    
-    if (semester) {
-      paramCount++;
-      query += ` AND au.semester = $${paramCount}`;
-      params.push(semester);
-    }
-    
-    if (academic_year) {
-      paramCount++;
-      query += ` AND au.academic_year = $${paramCount}`;
-      params.push(academic_year);
-    }
-    
-    if (status) {
-      paramCount++;
-      query += ` AND au.status = $${paramCount}`;
-      params.push(status);
-    }
-    
-    query += ' ORDER BY au.allocated_at DESC';
-    
-    const { rows } = await pool.query(query, params);
+      ORDER BY au.semester, u.unit_code
+    `, [student.id]);
     
     return c.json({
       success: true,
-      data: rows,
-      count: rows.length
+      student: {
+        id: student.id,
+        name: student.name,
+        registration_number: student.registration_number
+      },
+      allocated_units: allocatedUnits,
+      count: allocatedUnits.length
     });
     
   } catch (error) {
-    console.error('Error fetching allocated units:', error);
+    console.error('Error getting allocated units:', error);
     return c.json({ 
-      error: 'Failed to fetch allocated units', 
+      error: 'Failed to get allocated units', 
       details: error.message 
     }, 500);
   }
 });
 
-// Register an allocated unit (student function)
-app.post('/students/:studentId/register-allocated-unit', async (c) => {
+// Get allocated units for a student by registration number (with slash support)
+app.get('/students/registration/:course/:number/:year/allocated-units', async (c) => {
   try {
-    const { studentId } = c.req.param();
-    const body = await c.req.json();
-    const { allocated_unit_id } = body;
+    const { course, number, year } = c.req.param();
+    const registration_number = `${course}/${number}/${year}`;
     
-    if (!allocated_unit_id) {
-      return c.json({ 
-        error: 'Missing required fields', 
-        details: 'allocated_unit_id is required' 
-      }, 400);
-    }
-
-    // Verify the allocated unit exists and belongs to this student
-    const { rows: allocatedRows } = await pool.query(`
-      SELECT 
-        au.*,
-        u.unit_name,
-        u.unit_code,
-        s.registration_number
-      FROM allocated_units au
-      JOIN units u ON au.unit_id = u.id
-      JOIN students s ON au.student_id = s.id
-      WHERE au.id = $1 AND au.student_id = $2 AND au.status = 'allocated'
-    `, [allocated_unit_id, studentId]);
-    
-    if (allocatedRows.length === 0) {
-      return c.json({ 
-        error: 'Allocated unit not found', 
-        details: 'No allocated unit found for this student or unit is not available for registration' 
-      }, 404);
-    }
-    
-    const allocatedUnit = allocatedRows[0];
-    
-    // Check if already registered
-    const { rows: registeredRows } = await pool.query(
-      'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
-      [studentId, allocatedUnit.unit_code]
-    );
-    
-    if (registeredRows.length > 0) {
-      return c.json({ 
-        error: 'Unit already registered', 
-        details: 'Student is already registered for this unit' 
-      }, 409);
-    }
-
-    // Begin transaction
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      
-      // Register the unit
-      const { rows: newRegistrationRows } = await client.query(
-        'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
-        [studentId, allocatedUnit.unit_name, allocatedUnit.unit_code, 'registered']
-      );
-      
-      // Update the allocated unit status
-      await client.query(
-        'UPDATE allocated_units SET status = $1 WHERE id = $2',
-        ['registered', allocated_unit_id]
-      );
-      
-      await client.query('COMMIT');
-      
-      return c.json({ 
-        message: 'Unit registered successfully',
-        registered_unit: newRegistrationRows[0],
-        student_registration: allocatedUnit.registration_number
-      });
-      
-    } catch (txError) {
-      await client.query('ROLLBACK');
-      throw txError;
-    } finally {
-      client.release();
-    }
-    
-  } catch (error) {
-    console.error('Error registering allocated unit:', error);
-    return c.json({ 
-      error: 'Failed to register unit', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Register allocated unit by registration number
-app.post('/students/registration/:regNumber/register-allocated-unit', async (c) => {
-  try {
-    const { regNumber } = c.req.param();
+    console.log('Getting allocated units for registration number:', registration_number);
     
     // Find student by registration number
     const { rows: studentRows } = await pool.query(
-      'SELECT id FROM students WHERE registration_number = $1',
-      [regNumber]
+      'SELECT id, name, registration_number FROM students WHERE registration_number = $1',
+      [registration_number]
     );
     
     if (studentRows.length === 0) {
@@ -2723,256 +3165,49 @@ app.post('/students/registration/:regNumber/register-allocated-unit', async (c) 
       }, 404);
     }
     
-    // Forward to the main registration endpoint with student ID
-    const body = await c.req.json();
+    const student = studentRows[0];
     
-    const { allocated_unit_id } = body;
-    
-    if (!allocated_unit_id) {
-      return c.json({ 
-        error: 'Missing required fields', 
-        details: 'allocated_unit_id is required' 
-      }, 400);
-    }
-
-    const studentId = studentRows[0].id;
-
-    // Verify the allocated unit exists and belongs to this student
-    const { rows: allocatedRows } = await pool.query(`
+    // Get allocated units for this student
+    const { rows: allocatedUnits } = await pool.query(`
       SELECT 
         au.*,
         u.unit_name,
-        u.unit_code,
-        s.registration_number
+        u.unit_code
       FROM allocated_units au
       JOIN units u ON au.unit_id = u.id
-      JOIN students s ON au.student_id = s.id
-      WHERE au.id = $1 AND au.student_id = $2 AND au.status = 'allocated'
-    `, [allocated_unit_id, studentId]);
-    
-    if (allocatedRows.length === 0) {
-      return c.json({ 
-        error: 'Allocated unit not found', 
-        details: 'No allocated unit found for this student or unit is not available for registration' 
-      }, 404);
-    }
-    
-    const allocatedUnit = allocatedRows[0];
-    
-    // Check if already registered
-    const { rows: registeredRows } = await pool.query(
-      'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
-      [studentId, allocatedUnit.unit_code]
-    );
-    
-    if (registeredRows.length > 0) {
-      return c.json({ 
-        error: 'Unit already registered', 
-        details: 'Student is already registered for this unit' 
-      }, 409);
-    }
-
-    // Begin transaction
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      
-      // Register the unit
-      const { rows: newRegistrationRows } = await client.query(
-        'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
-        [studentId, allocatedUnit.unit_name, allocatedUnit.unit_code, 'registered']
-      );
-      
-      // Update the allocated unit status
-      await client.query(
-        'UPDATE allocated_units SET status = $1 WHERE id = $2',
-        ['registered', allocated_unit_id]
-      );
-      
-      await client.query('COMMIT');
-      
-      return c.json({ 
-        message: 'Unit registered successfully',
-        registered_unit: newRegistrationRows[0],
-        student_registration: allocatedUnit.registration_number
-      });
-      
-    } catch (txError) {
-      await client.query('ROLLBACK');
-      throw txError;
-    } finally {
-      client.release();
-    }
-    
-  } catch (error) {
-    console.error('Error registering allocated unit:', error);
-    return c.json({ 
-      error: 'Failed to register unit', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Cancel unit allocation (admin function)
-app.delete('/allocated-units/:allocationId', async (c) => {
-  try {
-    const { allocationId } = c.req.param();
-    
-    // Check if allocation exists and is not already registered
-    const { rows: allocatedRows } = await pool.query(`
-      SELECT 
-        au.*,
-        u.unit_name,
-        u.unit_code,
-        s.name as student_name,
-        s.registration_number
-      FROM allocated_units au
-      JOIN units u ON au.unit_id = u.id
-      JOIN students s ON au.student_id = s.id
-      WHERE au.id = $1
-    `, [allocationId]);
-    
-    if (allocatedRows.length === 0) {
-      return c.json({ 
-        error: 'Allocation not found', 
-        details: 'No allocation found with the provided ID' 
-      }, 404);
-    }
-    
-    const allocation = allocatedRows[0];
-    
-    if (allocation.status === 'registered') {
-      return c.json({ 
-        error: 'Cannot cancel registered allocation', 
-        details: 'This unit has already been registered by the student and cannot be cancelled' 
-      }, 409);
-    }
-    
-    // Update status to cancelled instead of deleting
-    const { rows } = await pool.query(
-      'UPDATE allocated_units SET status = $1 WHERE id = $2 RETURNING *',
-      ['cancelled', allocationId]
-    );
-    
-    return c.json({ 
-      message: 'Unit allocation cancelled successfully',
-      cancelled_allocation: {
-        ...rows[0],
-        unit_name: allocation.unit_name,
-        unit_code: allocation.unit_code,
-        student_name: allocation.student_name,
-        registration_number: allocation.registration_number
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error cancelling allocation:', error);
-    return c.json({ 
-      error: 'Failed to cancel allocation', 
-      details: error.message 
-    }, 500);
-  }
-});
-
-// Get all allocations (admin overview)
-app.get('/allocated-units', async (c) => {
-  try {
-    const { semester, academic_year, status, student_id, unit_id } = c.req.query();
-    
-    let query = `
-      SELECT 
-        au.*,
-        u.unit_name,
-        u.unit_code,
-        s.name as student_name,
-        s.registration_number,
-        s.course,
-        s.level_of_study
-      FROM allocated_units au
-      JOIN units u ON au.unit_id = u.id
-      JOIN students s ON au.student_id = s.id
-      WHERE 1=1
-    `;
-    
-    const params = [];
-    let paramCount = 0;
-    
-    if (semester) {
-      paramCount++;
-      query += ` AND au.semester = $${paramCount}`;
-      params.push(semester);
-    }
-    
-    if (academic_year) {
-      paramCount++;
-      query += ` AND au.academic_year = $${paramCount}`;
-      params.push(academic_year);
-    }
-    
-    if (status) {
-      paramCount++;
-      query += ` AND au.status = $${paramCount}`;
-      params.push(status);
-    }
-    
-    if (student_id) {
-      paramCount++;
-      query += ` AND au.student_id = $${paramCount}`;
-      params.push(student_id);
-    }
-    
-    if (unit_id) {
-      paramCount++;
-      query += ` AND au.unit_id = $${paramCount}`;
-      params.push(unit_id);
-    }
-    
-    query += ' ORDER BY au.allocated_at DESC';
-    
-    const { rows } = await pool.query(query, params);
-    
-    // Get summary statistics
-    const { rows: statsRows } = await pool.query(`
-      SELECT 
-        COUNT(*) as total_allocations,
-        COUNT(CASE WHEN status = 'allocated' THEN 1 END) as pending_registrations,
-        COUNT(CASE WHEN status = 'registered' THEN 1 END) as registered,
-        COUNT(CASE WHEN status = 'cancelled' THEN 1 END) as cancelled
-      FROM allocated_units
-    `);
+      WHERE au.student_id = $1
+      ORDER BY au.semester, u.unit_code
+    `, [student.id]);
     
     return c.json({
       success: true,
-      data: rows,
-      count: rows.length,
-      statistics: statsRows[0]
+      student: {
+        id: student.id,
+        name: student.name,
+        registration_number: student.registration_number
+      },
+      allocated_units: allocatedUnits,
+      count: allocatedUnits.length
     });
     
   } catch (error) {
-    console.error('Error fetching allocations:', error);
+    console.error('Error getting allocated units:', error);
     return c.json({ 
-      error: 'Failed to fetch allocations', 
-      details: error.message 
-    }, 500);
+      error: 'Failed to get allocated units', 
+      details: error.message    }, 500);
   }
 });
 
-// =============================================================================
-// END UNIT ALLOCATION SYSTEM
-// =============================================================================
+// Start the server
+const port = process.env.PORT || 3000;
 
-// Export the app object for use in Vercel API handler
-export { app };
+console.log(`Starting server on port ${port}...`);
 
-// Start the server when running directly
-// In Node.js, import.meta.url is available but import.meta.main is not
-// So we check if the file being run is the current file
-const isDirectRun = process.argv[1] === import.meta.url || process.argv[1] === 'index.js' || process.argv[1].endsWith('/index.js') || process.argv[1].endsWith('\\index.js');
-
-// Always start the server unless explicitly importing it elsewhere
-const PORT = process.env.PORT || 3000;
-console.log(`Server starting on port ${PORT}`);
 serve({
-  fetch: app.fetch.bind(app),
-  port: PORT
+  fetch: app.fetch,
+  port: port,
 });
+
+console.log(`Server running on http://localhost:${port}`);
+
+export { app };

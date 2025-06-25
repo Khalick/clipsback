@@ -955,6 +955,11 @@ POST /students/:studentId/allocate-units
 POST /students/registration/:regNumber/allocate-units
 ```
 
+**For registration numbers with slashes:**
+```
+POST /students/registration/:course/:number/:year/allocate-units
+```
+
 **Request Body:** (Same as above)
 
 ### Unit Allocation Viewing
@@ -992,6 +997,11 @@ GET /students/:studentId/allocated-units?semester=1&status=allocated
 GET /students/registration/:regNumber/allocated-units?semester=1&status=allocated
 ```
 
+**For registration numbers with slashes:**
+```
+GET /students/registration/:course/:number/:year/allocated-units?semester=1&status=allocated
+```
+
 **Response:** (Same as above)
 
 ### Student Unit Registration
@@ -1026,6 +1036,11 @@ POST /students/:studentId/register-allocated-unit
 #### Register Allocated Unit by Registration Number
 ```
 POST /students/registration/:regNumber/register-allocated-unit
+```
+
+**For registration numbers with slashes:**
+```
+POST /students/registration/:course/:number/:year/register-allocated-unit
 ```
 
 **Request Body:** (Same as above)
