@@ -1576,7 +1576,7 @@ app.post('/units/register', async (c) => {
       );
     }
 
-    // Check if the student is already registered for this unit
+    // Check if the student is already registered for this unit in registered_units table
     const { rows: existingRows } = await pool.query(
       'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
       [student_id, unit_code]
@@ -2156,7 +2156,7 @@ app.post('/exam-cards', async (c) => {
               });
               
             if (error) {
-              console.error(`Error uploading to exam_cards:`, error);
+              console.error
               throw error;
             }
 
@@ -2926,6 +2926,7 @@ app.post('/students/:studentId/allocate-units', async (c) => {
 app.post('/students/registration/:regNumber/allocate-units', async (c) => {
   try {
     const { regNumber } = c.req.param();
+    console.log('Allocating units for registration number:', regNumber);
     
     // Find student by registration number
     const { rows: studentRows } = await pool.query(
@@ -2939,17 +2940,114 @@ app.post('/students/registration/:regNumber/allocate-units', async (c) => {
         details: 'No student found with the provided registration number' 
       }, 404);
     }
+
+    const studentId = studentRows[0].id;
+    const body = await c.req.json();
+    const { unit_ids, semester = 1, academic_year = '2024/2025', notes } = body;
     
-    // Forward to the main allocation endpoint
-    c.req.param = () => ({ studentId: studentRows[0].id });
-    return app.fetch(c.req.raw.clone().url.replace(`/registration/${regNumber}/`, `/${studentRows[0].id}/`), {
-      method: c.req.method,
-      headers: c.req.raw.headers,
-      body: c.req.raw.body
-    }).then(res => res.json()).then(data => c.json(data));
+    console.log('Allocation request body:', { unit_ids, semester, academic_year, notes });
+    
+    if (!unit_ids || !Array.isArray(unit_ids) || unit_ids.length === 0) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'unit_ids array is required and cannot be empty' 
+      }, 400);
+    }
+
+    // Verify student exists
+    const { rows: studentVerifyRows } = await pool.query(
+      'SELECT id, registration_number, name FROM students WHERE id = $1',
+      [studentId]
+    );
+    
+    if (studentVerifyRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided ID' 
+      }, 404);
+    }
+
+    const student = studentVerifyRows[0];
+    
+    // Begin transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const allocatedUnits = [];
+      const errors = [];
+      
+      for (const unit_id of unit_ids) {
+        try {
+          // Verify unit exists
+          const { rows: unitRows } = await client.query(
+            'SELECT id, unit_name, unit_code FROM units WHERE id = $1',
+            [unit_id]
+          );
+          
+          if (unitRows.length === 0) {
+            errors.push(`Unit with ID ${unit_id} not found`);
+            continue;
+          }
+          
+          const unit = unitRows[0];
+          
+          // Check if already allocated
+          const { rows: existingRows } = await client.query(
+            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4 AND status != $5',
+            [studentId, unit_id, semester, academic_year, 'cancelled']
+          );
+          
+          if (existingRows.length > 0) {
+            errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
+            continue;
+          }
+          
+          // Insert allocation
+          const { rows: insertedRows } = await client.query(
+            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+            [studentId, unit_id, semester, academic_year, 'allocated', notes]
+          );
+          
+          allocatedUnits.push({
+            ...insertedRows[0],
+            unit_name: unit.unit_name,
+            unit_code: unit.unit_code
+          });
+          
+        } catch (unitError) {
+          console.error(`Error allocating unit ${unit_id}:`, unitError);
+          errors.push(`Failed to allocate unit ${unit_id}: ${unitError.message}`);
+        }
+      }
+      
+      await client.query('COMMIT');
+      
+      return c.json({
+        message: 'Unit allocation completed',
+        student: {
+          id: student.id,
+          registration_number: student.registration_number,
+          name: student.name
+        },
+        allocated_units: allocatedUnits,
+        summary: {
+          total_requested: unit_ids.length,
+          successfully_allocated: allocatedUnits.length,
+          errors: errors.length
+        },
+        errors: errors.length > 0 ? errors : undefined
+      });
+      
+    } catch (txError) {
+      await client.query('ROLLBACK');
+      throw txError;
+    } finally {
+      client.release();
+    }
     
   } catch (error) {
-    console.error('Error in registration-based allocation:', error);
+    console.error('Error allocating units:', error);
     return c.json({ 
       error: 'Failed to allocate units', 
       details: error.message 
@@ -3195,6 +3293,215 @@ app.get('/students/registration/:course/:number/:year/allocated-units', async (c
     return c.json({ 
       error: 'Failed to get allocated units', 
       details: error.message    }, 500);
+  }
+});
+
+// Upload/Update student photo endpoint
+app.post('/students/registration/:regNumber/upload-photo', async (c) => {
+  try {
+    const { regNumber } = c.req.param();
+    console.log('Photo upload request for student:', regNumber);
+    
+    const formData = await c.req.formData();
+    const photoFile = formData.get('photo');
+    
+    if (!photoFile || !(photoFile instanceof File) || photoFile.size === 0) {
+      return c.json({ 
+        error: 'Missing photo file', 
+        details: 'A valid photo file is required' 
+      }, 400);
+    }
+    
+    // Validate photo file type
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif'];
+    if (!allowedTypes.includes(photoFile.type)) {
+      return c.json({ 
+        error: 'Invalid photo type', 
+        details: 'Photo must be JPEG, JPG, PNG, or GIF format' 
+      }, 400);
+    }
+    
+    // Validate photo file size (max 5MB)
+    if (photoFile.size > 5 * 1024 * 1024) {
+      return c.json({ 
+        error: 'Photo file too large', 
+        details: 'Photo must be less than 5MB' 
+      }, 400);
+    }
+    
+    // Find student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id FROM students WHERE registration_number = $1',
+      [regNumber]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+    
+    try {
+      console.log('Uploading student photo to Supabase...');
+      const uploadResult = await uploadFileToSupabase(
+        photoFile,
+        'photos',
+        `student_${regNumber}`
+      );
+      
+      // Update student photo URL in database
+      const { rows } = await pool.query(
+        'UPDATE students SET photo_url = $1 WHERE registration_number = $2 RETURNING id, name, registration_number, photo_url',
+        [uploadResult.publicUrl, regNumber]
+      );
+      
+      console.log('Photo uploaded and student updated successfully:', uploadResult.publicUrl);
+      
+      return c.json({ 
+        message: 'Photo uploaded successfully',
+        photo_url: uploadResult.publicUrl,
+        student: rows[0]
+      });
+      
+    } catch (uploadError) {
+      console.error('Photo upload failed:', uploadError.message);
+      return c.json({ 
+        error: 'Photo upload failed', 
+        details: uploadError.message 
+      }, 500);
+    }
+    
+  } catch (error) {
+    console.error('Error uploading student photo:', error);
+    return c.json({ 
+      error: 'Failed to upload photo', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Register allocated unit for student by registration number (student function)
+app.post('/students/registration/:regNumber/register-allocated-unit', async (c) => {
+  try {
+    const { regNumber } = c.req.param();
+    const body = await c.req.json();
+    const { allocated_unit_id } = body;
+    
+    if (!allocated_unit_id) {
+      return c.json({ 
+        error: 'Missing required fields', 
+        details: 'allocated_unit_id is required' 
+      }, 400);
+    }
+
+    // Find student by registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT id, registration_number FROM students WHERE registration_number = $1',
+      [regNumber]
+    );
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found', 
+        details: 'No student found with the provided registration number' 
+      }, 404);
+    }
+
+    const student = studentRows[0];
+    
+    // Get the allocated unit details and verify it belongs to this student
+    const { rows: allocatedRows } = await pool.query(`
+      SELECT au.*, u.unit_name, u.unit_code 
+      FROM allocated_units au
+      JOIN units u ON au.unit_id = u.id
+      WHERE au.id = $1 AND au.student_id = $2 AND au.status = 'allocated'
+    `, [allocated_unit_id, student.id]);
+    
+    if (allocatedRows.length === 0) {
+      return c.json({ 
+        error: 'Allocated unit not found', 
+        details: 'No allocated unit found with the provided ID for this student, or unit is already registered/cancelled' 
+      }, 404);
+    }
+
+    const allocatedUnit = allocatedRows[0];
+    
+    // Check if student is already registered for this unit in registered_units table
+    const { rows: existingRows } = await pool.query(
+      'SELECT id FROM registered_units WHERE student_id = $1 AND unit_code = $2',
+      [student.id, allocatedUnit.unit_code]
+    );
+    
+    if (existingRows.length > 0) {
+      return c.json({ 
+        error: 'Unit already registered', 
+        details: 'Student is already registered for this unit' 
+      }, 409);
+    }
+
+    // Begin transaction
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Update allocated unit status to 'registered'
+      await client.query(
+        'UPDATE allocated_units SET status = $1 WHERE id = $2',
+        ['registered', allocated_unit_id]
+      );
+      
+      // Insert into registered_units table
+      const { rows: registeredRows } = await client.query(
+        'INSERT INTO registered_units (student_id, unit_name, unit_code, status) VALUES ($1, $2, $3, $4) RETURNING *',
+        [student.id, allocatedUnit.unit_name, allocatedUnit.unit_code, 'registered']
+      );
+      
+      await client.query('COMMIT');
+      
+      return c.json({ 
+        message: 'Unit registered successfully',
+        registered_unit: registeredRows[0],
+        student_registration: student.registration_number,
+        allocated_unit_updated: true
+      });
+      
+    } catch (txError) {
+      await client.query('ROLLBACK');
+      throw txError;
+    } finally {
+      client.release();
+    }
+    
+  } catch (error) {
+    console.error('Error registering allocated unit:', error);
+    return c.json({ 
+      error: 'Failed to register allocated unit', 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Register allocated unit for student by registration number with slash support (student function)
+app.post('/students/registration/:course/:number/:year/register-allocated-unit', async (c) => {
+  try {
+    const { course, number, year } = c.req.param();
+    const registration_number = `${course}/${number}/${year}`;
+    
+    // Forward to the main registration endpoint
+    c.req.param = () => ({ regNumber: registration_number });
+    return app.fetch(c.req.raw.clone().url.replace(`/registration/${course}/${number}/${year}/`, `/registration/${registration_number}/`), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.raw.body
+    }).then(res => res.json()).then(data => c.json(data));
+    
+  } catch (error) {
+    console.error('Error in registration-based unit registration:', error);
+    return c.json({ 
+      error: 'Failed to register allocated unit', 
+      details: error.message 
+    }, 500);
   }
 });
 
