@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { pool } from './db.js';
+import { pool, sql } from './db.js';
 import { cors } from 'hono/cors';
 import { serve } from '@hono/node-server';
 import bcrypt from 'bcryptjs';
@@ -2837,81 +2837,77 @@ app.post('/students/:studentId/allocate-units', async (c) => {
         error: 'Student not found', 
         details: 'No student found with the provided ID' 
       }, 404);
-    }
-
-    const student = studentRows[0];
+    }    const student = studentRows[0];
     
-    // Begin transaction
-    const client = await pool.connect();
+    // Use direct sql transactions instead of pool.connect
+    const allocatedUnits = [];
+    const errors = [];
+    
     try {
-      await client.query('BEGIN');
-      
-      const allocatedUnits = [];
-      const errors = [];
-      
-      for (const unit_id of unit_ids) {
-        try {
-          // Verify unit exists
-          const { rows: unitRows } = await client.query(
-            'SELECT id, unit_name, unit_code FROM units WHERE id = $1',
-            [unit_id]
-          );
-          
-          if (unitRows.length === 0) {
-            errors.push(`Unit with ID ${unit_id} not found`);
-            continue;
+      await sql.begin(async (txSql) => {
+        for (const unit_id of unit_ids) {
+          try {
+            // Verify unit exists
+            const unitRows = await txSql`
+              SELECT id, unit_name, unit_code FROM units WHERE id = ${unit_id}
+            `;
+            
+            if (unitRows.length === 0) {
+              errors.push(`Unit with ID ${unit_id} not found`);
+              continue;
+            }
+            
+            const unit = unitRows[0];
+            
+            // Check if already allocated
+            const existingRows = await txSql`
+              SELECT id FROM allocated_units 
+              WHERE student_id = ${studentId} 
+              AND unit_id = ${unit_id} 
+              AND semester = ${semester} 
+              AND academic_year = ${academic_year} 
+              AND status != 'cancelled'
+            `;
+            
+            if (existingRows.length > 0) {
+              errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
+              continue;
+            }
+            
+            // Insert allocation
+            const insertedRows = await txSql`
+              INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) 
+              VALUES (${studentId}, ${unit_id}, ${semester}, ${academic_year}, 'allocated', ${notes || null}) 
+              RETURNING *
+            `;
+            
+            allocatedUnits.push({
+              ...insertedRows[0],
+              unit_name: unit.unit_name,
+              unit_code: unit.unit_code
+            });
+            
+          } catch (unitError) {
+            errors.push(`Error allocating unit ${unit_id}: ${unitError.message}`);
           }
-          
-          const unit = unitRows[0];
-          
-          // Check if already allocated
-          const { rows: existingRows } = await client.query(
-            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4 AND status != $5',
-            [studentId, unit_id, semester, academic_year, 'cancelled']
-          );
-          
-          if (existingRows.length > 0) {
-            errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
-            continue;
-          }
-          
-          // Insert allocation
-          const { rows: insertedRows } = await client.query(
-            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-            [studentId, unit_id, semester, academic_year, 'allocated', notes]
-          );
-          
-          allocatedUnits.push({
-            ...insertedRows[0],
-            unit_name: unit.unit_name,
-            unit_code: unit.unit_code
-          });
-          
-        } catch (unitError) {
-          errors.push(`Error allocating unit ${unit_id}: ${unitError.message}`);
-        }
-      }
-      
-      await client.query('COMMIT');
-      
-      return c.json({ 
-        message: 'Unit allocation completed',
-        student: student,
-        allocated_units: allocatedUnits,
-        errors: errors.length > 0 ? errors : undefined,
-        summary: {
-          total_requested: unit_ids.length,
-          successfully_allocated: allocatedUnits.length,
-          errors: errors.length
         }
       });
-      
     } catch (txError) {
-      await client.query('ROLLBACK');
+      console.error('Transaction error:', txError);
       throw txError;
-    } finally {
-      client.release();
     }
+    
+    return c.json({ 
+      message: 'Unit allocation completed',
+      student: student,
+      allocated_units: allocatedUnits,
+      errors: errors.length > 0 ? errors : undefined,
+      summary: {
+        total_requested: unit_ids.length,
+        successfully_allocated: allocatedUnits.length,
+        errors: errors.length
+      }
+    });
     
   } catch (error) {
     console.error('Error allocating units:', error);
@@ -2965,86 +2961,81 @@ app.post('/students/registration/:regNumber/allocate-units', async (c) => {
         error: 'Student not found', 
         details: 'No student found with the provided ID' 
       }, 404);
-    }
-
-    const student = studentVerifyRows[0];
+    }    const student = studentVerifyRows[0];
     
-    // Begin transaction
-    const client = await pool.connect();
+    // Use direct sql transactions instead of pool.connect
+    const allocatedUnits = [];
+    const errors = [];
+    
     try {
-      await client.query('BEGIN');
-      
-      const allocatedUnits = [];
-      const errors = [];
-      
-      for (const unit_id of unit_ids) {
-        try {
-          // Verify unit exists
-          const { rows: unitRows } = await client.query(
-            'SELECT id, unit_name, unit_code FROM units WHERE id = $1',
-            [unit_id]
-          );
-          
-          if (unitRows.length === 0) {
-            errors.push(`Unit with ID ${unit_id} not found`);
-            continue;
+      await sql.begin(async (txSql) => {
+        for (const unit_id of unit_ids) {
+          try {
+            // Verify unit exists
+            const unitRows = await txSql`
+              SELECT id, unit_name, unit_code FROM units WHERE id = ${unit_id}
+            `;
+            
+            if (unitRows.length === 0) {
+              errors.push(`Unit with ID ${unit_id} not found`);
+              continue;
+            }
+            
+            const unit = unitRows[0];
+            
+            // Check if already allocated
+            const existingRows = await txSql`
+              SELECT id FROM allocated_units 
+              WHERE student_id = ${studentId} 
+              AND unit_id = ${unit_id} 
+              AND semester = ${semester} 
+              AND academic_year = ${academic_year} 
+              AND status != 'cancelled'
+            `;
+            
+            if (existingRows.length > 0) {
+              errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
+              continue;
+            }
+            
+            // Insert allocation
+            const insertedRows = await txSql`
+              INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) 
+              VALUES (${studentId}, ${unit_id}, ${semester}, ${academic_year}, 'allocated', ${notes}) 
+              RETURNING *
+            `;
+            
+            allocatedUnits.push({
+              ...insertedRows[0],
+              unit_name: unit.unit_name,
+              unit_code: unit.unit_code
+            });
+            
+          } catch (unitError) {
+            console.error(`Error allocating unit ${unit_id}:`, unitError);
+            errors.push(`Failed to allocate unit ${unit_id}: ${unitError.message}`);
           }
-          
-          const unit = unitRows[0];
-          
-          // Check if already allocated
-          const { rows: existingRows } = await client.query(
-            'SELECT id FROM allocated_units WHERE student_id = $1 AND unit_id = $2 AND semester = $3 AND academic_year = $4 AND status != $5',
-            [studentId, unit_id, semester, academic_year, 'cancelled']
-          );
-          
-          if (existingRows.length > 0) {
-            errors.push(`Unit ${unit.unit_code} already allocated for this semester`);
-            continue;
-          }
-          
-          // Insert allocation
-          const { rows: insertedRows } = await client.query(
-            'INSERT INTO allocated_units (student_id, unit_id, semester, academic_year, status, notes) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-            [studentId, unit_id, semester, academic_year, 'allocated', notes]
-          );
-          
-          allocatedUnits.push({
-            ...insertedRows[0],
-            unit_name: unit.unit_name,
-            unit_code: unit.unit_code
-          });
-          
-        } catch (unitError) {
-          console.error(`Error allocating unit ${unit_id}:`, unitError);
-          errors.push(`Failed to allocate unit ${unit_id}: ${unitError.message}`);
         }
-      }
-      
-      await client.query('COMMIT');
-      
-      return c.json({
-        message: 'Unit allocation completed',
-        student: {
-          id: student.id,
-          registration_number: student.registration_number,
-          name: student.name
-        },
-        allocated_units: allocatedUnits,
-        summary: {
-          total_requested: unit_ids.length,
-          successfully_allocated: allocatedUnits.length,
-          errors: errors.length
-        },
-        errors: errors.length > 0 ? errors : undefined
       });
-      
-    } catch (txError) {
-      await client.query('ROLLBACK');
+    } catch (txError) {      console.error('Transaction error:', txError);
       throw txError;
-    } finally {
-      client.release();
     }
+    
+    return c.json({
+      message: 'Unit allocation completed',
+      student: {
+        id: student.id,
+        registration_number: student.registration_number,
+        name: student.name
+      },
+      allocated_units: allocatedUnits,
+      summary: {
+        total_requested: unit_ids.length,
+        successfully_allocated: allocatedUnits.length,
+        errors: errors.length
+      },
+      errors: errors.length > 0 ? errors : undefined
+    });
     
   } catch (error) {
     console.error('Error allocating units:', error);
