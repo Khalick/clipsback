@@ -1540,7 +1540,7 @@ app.post('/timetable', async (c) => {
   try {
     console.log('Timetable upload request received')
     
-    // Check content type for debugging
+    // Get content type for debugging
     const contentType = c.req.header('content-type') || ''
     console.log('Content-Type:', contentType)
     console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()))
@@ -1615,12 +1615,24 @@ app.post('/timetable', async (c) => {
       return c.json({
         error: 'Valid file is required',
         details: 'Please provide a valid file in FormData',
-        receivedFields: [...formData.keys()]
+        receivedFields: [...formData.keys()],
+        fileType: file ? typeof file : 'undefined'
       }, 400)
     }
     
     if (file.size > 10 * 1024 * 1024) {
-      return c.json({ error: 'File size must be less than 10MB' }, 400)
+      return c.json({
+        error: 'File size must be less than 10MB',
+        actualSize: `${(file.size / 1024 / 1024).toFixed(2)}MB`
+      }, 400)
+    }
+    
+    // Validate file size (min 1KB)
+    if (file.size < 1024) {
+      return c.json({
+        error: 'File appears to be empty or too small',
+        actualSize: `${file.size} bytes`
+      }, 400)
     }
     
     const result = await handleFileUpload(registrationNumber.trim(), file, 'timetable')
@@ -1745,6 +1757,96 @@ app.get('/documents/:registrationNumber', async (c) => {
     console.error('Get documents error:', error)
     return c.json({
       error: 'Failed to retrieve documents',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
+// Get documents for a student by student ID
+app.get('/students/:id/documents', async (c) => {
+  try {
+    const studentId = c.req.param('id')
+    console.log('Fetching documents for student ID:', studentId)
+    
+    // First get the student's registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT registration_number FROM students WHERE id = $1',
+      [studentId]
+    )
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found',
+        details: 'No student found with the provided ID'
+      }, 404)
+    }
+    
+    const registrationNumber = studentRows[0].registration_number
+    
+    // Get all documents for this student
+    const { rows } = await pool.query(
+      `SELECT * FROM student_documents 
+       WHERE registration_number = $1 
+       ORDER BY uploaded_at DESC`,
+      [registrationNumber]
+    )
+
+    return c.json({
+      success: true,
+      data: rows,
+      count: rows.length,
+      student_id: studentId,
+      registration_number: registrationNumber
+    })
+  } catch (error) {
+    console.error('Get student documents error:', error)
+    return c.json({
+      error: 'Failed to retrieve student documents',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    }, 500)
+  }
+})
+
+// Get documents for a student by student ID
+app.get('/students/:id/documents', async (c) => {
+  try {
+    const studentId = c.req.param('id')
+    console.log('Fetching documents for student ID:', studentId)
+    
+    // First get the student's registration number
+    const { rows: studentRows } = await pool.query(
+      'SELECT registration_number FROM students WHERE id = $1',
+      [studentId]
+    )
+    
+    if (studentRows.length === 0) {
+      return c.json({ 
+        error: 'Student not found',
+        details: 'No student found with the provided ID'
+      }, 404)
+    }
+    
+    const registrationNumber = studentRows[0].registration_number
+    
+    // Get all documents for this student
+    const { rows } = await pool.query(
+      `SELECT * FROM student_documents 
+       WHERE registration_number = $1 
+       ORDER BY uploaded_at DESC`,
+      [registrationNumber]
+    )
+
+    return c.json({
+      success: true,
+      data: rows,
+      count: rows.length,
+      student_id: studentId,
+      registration_number: registrationNumber
+    })
+  } catch (error) {
+    console.error('Get student documents error:', error)
+    return c.json({
+      error: 'Failed to retrieve student documents',
       details: error instanceof Error ? error.message : 'Unknown error'
     }, 500)
   }
@@ -2063,49 +2165,50 @@ app.post('/student/auth/forgot-password', async (c) => {
 app.get('/students/:id/exam-card', async (c) => {
   try {
     const studentId = c.req.param('id');
-    // Check fee status
+    console.log('Fetching exam card for student:', studentId);
+    
+    // First, verify the student exists
+    const { rows: studentRows } = await pool.query(
+      'SELECT id, registration_number, name FROM students WHERE id = $1',
+      [studentId]
+    );
+    
+    if (studentRows.length === 0) {
+      console.log('Student not found:', studentId);
+      return c.json({ error: 'Student not found' }, 404);
+    }
+    
+    // Check fee status (optional - don't block if no fee record)
     const { rows: feeRows } = await pool.query(
       'SELECT fee_balance FROM fees WHERE student_id = $1',
       [studentId]
     );
-    if (feeRows.length === 0) return c.json({ error: 'No fee record found' }, 404);
-    if (parseFloat(feeRows[0].fee_balance) > 0) {
-      return c.json({ error: 'Please complete your fee payment to download your exam card.' }, 403);
+    
+    let feeStatus = 'no_record';
+    if (feeRows.length > 0) {
+      const feeBalance = parseFloat(feeRows[0].fee_balance) || 0;
+      if (feeBalance > 0) {
+        console.log('Student has outstanding fee balance:', feeBalance);
+        return c.json({ 
+          error: 'Please complete your fee payment to download your exam card.',
+          fee_balance: feeBalance
+        }, 403);
+      }
+      feeStatus = 'paid';
     }
-    // Get exam card file URL
-    const { rows: cardRows } = await pool.query(
-      'SELECT file_url FROM exam_cards WHERE student_id = $1 ORDER BY created_at DESC LIMIT 1',
-      [studentId]
+    
+    // Try to get exam card file URL from new unified system first
+    const { rows: docRows } = await pool.query(
+      `SELECT file_url, file_name, uploaded_at FROM student_documents 
+       WHERE registration_number = $1 AND document_type = 'exam-card' 
+       ORDER BY uploaded_at DESC LIMIT 1`,
+      [studentRows[0].registration_number]
     );
-    if (cardRows.length === 0) return c.json({ error: 'No exam card found' }, 404);
-    return c.json({ file_url: cardRows[0].file_url });
-  } catch (error) {
-    console.error('Error fetching exam card:', error);
-    return c.json({ error: 'Failed to fetch exam card', details: error.message }, 500);
-  }
-});
-
-app.get('/exam-cards', async (c) => {
-  try {
-    const { rows } = await pool.query('SELECT * FROM exam_cards');
-    return c.json(rows);
-  } catch (error) {
-    console.error('Error fetching exam cards:', error);
-    return c.json({ error: 'Failed to fetch exam cards', details: error.message }, 500);
-  }
-});
-
-// Add POST endpoint for exam cards
-app.post('/exam-cards', async (c) => {
-  try {
-    console.log('POST /exam-cards request received');
     
-    // Check content type to determine handling method
-    const contentType = c.req.header('content-type') || '';
-    console.log('Request content-type:', contentType);
-    
-    let registration_number;
-    let file_url;
+    if (docRows.length > 0) {
+      console.log('Found exam card in unified document system');
+      return c.json({ 
+        file_url: docRows[0].
     
     // Handle binary file upload (application/octet-stream or specific file types)
     if (contentType.includes('application/octet-stream') || 
