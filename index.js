@@ -1535,34 +1535,15 @@ app.post('/results', async (c) => {
   }
 })
 
-// Timetable upload route with enhanced FormData handling
+// Timetable upload route with flexible FormData handling
 app.post('/timetable', async (c) => {
   try {
     console.log('Timetable upload request received')
     
-    // Get content type and other headers for debugging
+    // Check content type for debugging
     const contentType = c.req.header('content-type') || ''
-    const contentLength = c.req.header('content-length') || 'unknown'
     console.log('Content-Type:', contentType)
-    console.log('Content-Length:', contentLength)
-    
-    // Validate content type
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'Request must use multipart/form-data content type',
-        receivedContentType: contentType
-      }, 400)
-    }
-    
-    // Check for boundary in content type
-    if (!contentType.includes('boundary=')) {
-      return c.json({
-        error: 'Missing boundary in content type',
-        details: 'multipart/form-data requests must include boundary parameter',
-        receivedContentType: contentType
-      }, 400)
-    }
+    console.log('Request headers:', Object.fromEntries(c.req.raw.headers.entries()))
     
     let formData
     try {
@@ -1570,21 +1551,46 @@ app.post('/timetable', async (c) => {
       console.log('FormData parsed successfully for timetable')
       console.log('Form fields:', [...formData.keys()])
     } catch (formError) {
-      console.error('FormData parsing error:', formError)
+      console.error('FormData parsing error details:', formError)
+      
+      // Try to get the raw body for debugging
+      try {
+        const rawBody = await c.req.text()
+        console.log('Raw body preview (first 500 chars):', rawBody.substring(0, 500))
+        console.log('Raw body type:', typeof rawBody)
+        console.log('Raw body length:', rawBody.length)
+        
+        // Check if the body looks like valid multipart data
+        const hasFormDataMarkers = rawBody.includes('Content-Disposition') && rawBody.includes('form-data')
+        console.log('Body appears to be FormData:', hasFormDataMarkers)
+        
+        // If it looks like FormData but failed to parse, might be a boundary issue
+        if (hasFormDataMarkers && !contentType.includes('boundary=')) {
+          console.log('WARNING: Body appears to be FormData but Content-Type missing boundary')
+        }
+      } catch (bodyError) {
+        console.error('Could not read raw body:', bodyError)
+      }
+      
       return c.json({
         error: 'Malformed FormData request',
-        details: `Failed to parse body as FormData: ${formError.message}`,
+        details: 'Failed to parse body as FormData',
         contentType: contentType,
-        contentLength: contentLength,
-        errorType: formError.name || 'Unknown'
+        formError: formError.message,
+        help: 'Ensure you are sending a valid multipart/form-data request with proper boundary',
+        debug: {
+          hasContentType: !!contentType,
+          isMultipart: contentType.includes('multipart/form-data'),
+          hasBoundary: contentType.includes('boundary='),
+          userAgent: c.req.header('user-agent') || 'Not provided',
+          contentLength: c.req.header('content-length') || 'Not provided'
+        }
       }, 400)
     }
     
-    // Extract fields with flexible field name matching
     let registrationNumber = formData.get('registrationNumber') || 
                             formData.get('registration_number') || 
-                            formData.get('regNumber') ||
-                            formData.get('reg_number')
+                            formData.get('regNumber')
     
     let file = formData.get('file') || 
                formData.get('timetable') || 
@@ -1605,29 +1611,16 @@ app.post('/timetable', async (c) => {
       }, 400)
     }
     
-    if (!file || !(file instanceof File)) {
+    if (!file || !(file instanceof File) || file.size === 0) {
       return c.json({
-        error: 'File is required',
+        error: 'Valid file is required',
         details: 'Please provide a valid file in FormData',
-        receivedFields: [...formData.keys()],
-        fileType: file ? typeof file : 'undefined'
+        receivedFields: [...formData.keys()]
       }, 400)
     }
     
-    // Validate file size (min 1KB)
-    if (file.size < 1024) {
-      return c.json({
-        error: 'File appears to be empty or too small',
-        actualSize: `${file.size} bytes`
-      }, 400)
-    }
-    
-    // Validate file size (max 10MB)
     if (file.size > 10 * 1024 * 1024) {
-      return c.json({
-        error: 'File size must be less than 10MB',
-        actualSize: `${(file.size / 1024 / 1024).toFixed(2)}MB`
-      }, 400)
+      return c.json({ error: 'File size must be less than 10MB' }, 400)
     }
     
     const result = await handleFileUpload(registrationNumber.trim(), file, 'timetable')
@@ -1640,81 +1633,7 @@ app.post('/timetable', async (c) => {
     console.error('Timetable upload error:', error)
     return c.json({
       error: 'Failed to upload timetable',
-      details: error instanceof Error ? error.message : 'Unknown error',
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    }, 500)
-  }
-})
-
-// Alternative timetable upload route with raw body handling
-app.post('/timetable-alt', async (c) => {
-  try {
-    console.log('Alternative timetable upload request received')
-    
-    const contentType = c.req.header('content-type') || ''
-    console.log('Content-Type:', contentType)
-    
-    if (!contentType.includes('multipart/form-data')) {
-      return c.json({
-        error: 'Invalid content type',
-        details: 'Request must use multipart/form-data content type'
-      }, 400)
-    }
-    
-    try {
-      // Try to get the raw body as ArrayBuffer first
-      const rawBody = await c.req.arrayBuffer()
-      console.log('Raw body length:', rawBody.byteLength)
-      
-      // Manual FormData parsing logic could go here if needed
-      // For now, let's try the standard formData() method with better error reporting
-      
-      // Reset and try formData again
-      const formData = await c.req.formData()
-      
-      let registrationNumber = formData.get('registrationNumber') || 
-                              formData.get('registration_number') || 
-                              formData.get('regNumber')
-      
-      let file = formData.get('file') || 
-                 formData.get('timetable') || 
-                 formData.get('document')
-      
-      if (!registrationNumber) {
-        return c.json({
-          error: 'Registration number is required',
-          receivedFields: [...formData.keys()]
-        }, 400)
-      }
-      
-      if (!file || !(file instanceof File)) {
-        return c.json({
-          error: 'File is required',
-          receivedFields: [...formData.keys()]
-        }, 400)
-      }
-      
-      const result = await handleFileUpload(registrationNumber.trim(), file, 'timetable')
-      
-      return c.json({
-        message: 'Timetable uploaded successfully (alternative route)',
-        ...result
-      }, 201)
-      
-    } catch (parseError) {
-      console.error('Body parsing error:', parseError)
-      return c.json({
-        error: 'Failed to parse request body',
-        details: parseError.message,
-        contentType: contentType
-      }, 400)
-    }
-    
-  } catch (error) {
-    console.error('Alternative timetable upload error:', error)
-    return c.json({
-      error: 'Failed to upload timetable',
-      details: error.message
+      details: error instanceof Error ? error.message : 'Unknown error'
     }, 500)
   }
 })
@@ -2266,6 +2185,79 @@ app.post('/exam-cards', async (c) => {
         
         // Return file URL for further processing
         return c.json({
+          message: 'Binary file uploaded successfully',
+          file_url: file_url,
+          registration_number: registration_number,
+          upload_path: uploadPath,
+          expires_in_seconds: expiresIn,
+          file_size: binaryData.byteLength,
+          note: 'Use the file_url and registration_number to save the exam card record'
+        });
+        
+      } catch (supabaseError) {
+        console.error('Supabase upload error:', supabaseError);
+        return c.json({
+          error: 'Failed to upload binary file for exam card',
+          details: supabaseError.message
+        }, 500);
+      }
+    } 
+    // Handle multipart/form-data (legacy support)
+    else if (contentType.includes('multipart/form-data')) {
+      try {
+        console.log('Processing multipart form data for file upload (legacy mode)');
+        const formData = await c.req.formData();
+        console.log('Form data parsed with formData():', [...formData.keys()]);
+        
+        // Validate form data
+        if (!formData) {
+          return c.json({
+            error: 'Invalid form data',
+            details: 'Failed to parse multipart form data properly'
+          }, 400);
+        }
+        
+        registration_number = formData.get('registration_number');
+        
+        // Validate required fields
+        if (!registration_number) {
+          return c.json({
+            error: 'Missing required field',
+            details: 'Registration number is required'
+          }, 400);
+        }
+        
+        // Handle file upload - upload to Supabase first, then return URL
+        const file = formData.get('file');
+        console.log('File detection debug:', {
+          file: file ? 'present' : 'missing',
+          hasSize: file && file.size ? `${file.size} bytes` : 'no size',
+          fileType: file ? typeof file : 'N/A',
+          fileName: file && file.name ? file.name : 'no name',
+          isFile: file instanceof File
+        });
+        
+        if (file && file instanceof File && file.size > 0) {
+          console.log('File included in request, uploading to Supabase...');
+          console.log('File details:', {
+            name: file.name,
+            type: file.type,
+            size: file.size
+          });
+          
+          try {
+            // Convert File to binary data
+            const fileData = await file.arrayBuffer();
+            
+            // Upload to Supabase with custom expiry (e.g., 1 year = 31536000 seconds)
+            const uploadPath = `exam_cards/${registration_number}_${Date.now()}_${file.name}`;
+            
+            console.log(`Uploading ${file.name} to exam_cards folder in student-documents bucket...`);
+            
+            const { data, error } = await supabase.storage
+              .from('student-documents')
+              .upload(uploadPath, fileData, { 
+                contentType: file.type,
                 cacheControl: '31536000' // 1 year cache
               });
               
@@ -2859,6 +2851,11 @@ app.get('/timetable/:course/:semester', async (c) => {
 // Test route for new unified upload page
 app.get('/test-unified-upload', (c) => {
   return c.redirect('/test/test-unified-upload.html');
+});
+
+// Debug route for FormData testing
+app.get('/debug-formdata', (c) => {
+  return c.redirect('/debug-formdata.html');
 });
 
 // =============================================================================
