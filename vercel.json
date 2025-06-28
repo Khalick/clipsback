@@ -17,13 +17,6 @@
     },
     {
       "src": "/(.*)",
-      "headers": {
-        "Cache-Control": "public, max-age=3600"
-      },
-      "continue": true
-    },
-    {
-      "src": "/(.*)",
       "dest": "/api/index.js"
     }
   ]
