@@ -17,7 +17,7 @@
     },
     {
       "src": "/(.*)",
-      "dest": "/api/index.js"
+      "dest": "/public/$1"
     }
   ]
 }
