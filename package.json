@@ -13,14 +13,14 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.14.4",
-    "@netlify/functions": "^2.0.0",
-    "@supabase/supabase-js": "^2.50.0",
-    "@vercel/node": "^3.0.24",
+    "@netlify/functions": "^4.1.8",
+    "@supabase/supabase-js": "^2.50.2",
+    "@vercel/node": "^2.3.0",
     "bcryptjs": "^3.0.2",
-    "dotenv": "^16.5.0",
-    "hono": "^4.7.11",
+    "dotenv": "^17.0.1",
+    "hono": "^4.8.3",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.16.1",
+    "pg": "^8.16.3",
     "postgres": "^3.4.7",
     "serverless-http": "^3.2.0"
   }
